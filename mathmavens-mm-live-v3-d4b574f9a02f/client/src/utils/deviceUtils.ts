@@ -1,3 +1,6 @@
+import { USER_DATA_TYPE } from "@/types/user";
+import { toast } from "sonner";
+
 export const getUserVideoDevices = async()=>{
     // let userDevices:MediaDeviceInfo[] = [];
     const devices = await navigator.mediaDevices
@@ -21,15 +24,24 @@ export const getUserVideoDevices = async()=>{
     // return userDevices;
 }
 
+export const requestCameraPermission = async () => {
+    try {
+        // Request a stream just to trigger the permission prompt.
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        // Immediately stop the tracks to release the camera, as we don't need this stream yet.
+        stream.getTracks().forEach(track => track.stop());
+        return true; // Indicates permission was granted
+    } catch (err) {
+        console.error("Error requesting camera permission:", err);
+        toast.error("Please give camera permission")
+        return false; // Indicates permission was denied or another error occurred
+    }
+};
+
 
 export const getAllUserVideoInput = async () =>{
   try {
     const devices = await getUserVideoDevices() as REMOTE_STREAM_TYPE[];
-    // setVideoDevices(devices);
-    // // Set the first device as the default selection if it exists
-    // if (devices.length > 0) {
-    //   setSelectedDevice(devices[0].deviceId);
-    // }
     return devices;
   } catch (error) {
     console.error("Error fetching video devices:", error);
@@ -47,5 +59,10 @@ export const getAllUserVideoInput = async () =>{
 export type REMOTE_STREAM_TYPE = MediaDeviceInfo &{
   stream:MediaStream
   consumerId:string
-  userData:object
+  userData:USER_DATA_TYPE
+  producerId?: string;
+  kind?: string; // 'video' | 'audio'
+  quality?: 'excellent' | 'good' | 'poor';
+  deviceId?: string;
+  label?: string;
 }

@@ -19,8 +19,24 @@ import LoadingScreen from "@/components/screen/LoadingScreen";
 import StudentView from "@/components/roomView/StudentView";
 import TeacherView from "@/components/roomView/TeacherView";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2 } from "lucide-react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Loader2, RefreshCwIcon } from "lucide-react";
+import { AdminHeader } from "@/components/layout/AdminHeader";
+import { StudentHeader } from "@/components/layout/StudentHeader";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { getAllUserVideoInput } from "@/utils/deviceUtils";
+import { toast } from "sonner";
 
 function VideoChat() {
   const {
@@ -34,7 +50,10 @@ function VideoChat() {
     isDeviceLoading,
     handleJoin,
     handleCameraChange,
+    setIsDeviceLoading,
+    setVideoDevices,
     setSelectedDevice,
+    isReconnecting,
   } = useStreamStore(
     useShallow((state) => ({
       localVideo: state.localVideo,
@@ -47,7 +66,10 @@ function VideoChat() {
       handleCameraChange: state.handleCameraChange,
       setSelectedDevice: state.setSelectedDevice,
       isDeviceLoading: state.isDeviceLoading,
-      isJoining:state.isJoining
+      isJoining: state.isJoining,
+      setIsDeviceLoading:state.setIsDeviceLoading,
+      setVideoDevices:state.setVideoDevices,
+      isReconnecting:state.isReconnecting
     }))
   );
   const {
@@ -57,6 +79,7 @@ function VideoChat() {
     isRoomLoading,
     roomId,
     userData,
+    peerId,
   } = useUserStore(
     useShallow((state) => ({
       hasToken: state.hasToken,
@@ -65,204 +88,135 @@ function VideoChat() {
       isRoomLoading: state.isRoomLoading,
       roomId: state.roomId,
       userData: state.userData,
+      peerId: state.peerId,
     }))
   );
+
+  const refreshDevice = async () => {
+    // const { setVideoDevices, setIsDeviceLoading } =
+    //   storeRef.current!.getState();
+    setIsDeviceLoading(true);
+    try {
+      const devices = await getAllUserVideoInput();
+      setVideoDevices(devices);
+      toast.success("Device Detected!")
+    } catch (err) {
+      //@ ALERT HERE
+      setVideoDevices([]);
+    } finally {
+      setIsDeviceLoading(false);
+    }
+  };
 
   if (isDeviceLoading || isUserLoading || isRoomLoading)
     return <LoadingScreen />;
   if (!hasToken) return <NoTokenScreen />;
   if (!hasRoomAccess) return <InvalidRoomScreen />;
-  // if (userData?.live_role === "Admin" && !isRoomJoined) {
-  //   return (
-  //     <Button
-  //       onClick={() => handleJoin(roomId, userData, "Admin")}
-  //       disabled={!isConnected || isRoomJoined}
-  //       className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
-  //     >
-  //       1. Join Room
-  //     </Button>
-  //   );
-  // } else 
-  if (
-   
-    !isRoomJoined
-  ) {
+
+  if (!isRoomJoined && !isReconnecting) {
     return (
       <div>
         <div className="flex items-center justify-center min-h-screen bg-background p-4">
-      <Card className="w-full max-w-2xl">
-        <CardHeader>
-          <CardTitle className="text-2xl">Ready to Join?</CardTitle>
-          {userData?.live_role !== "Admin" && <CardDescription>
-            Configure your video device before entering the room.
-          </CardDescription>}
-          
-        </CardHeader>
-        <CardContent className="space-y-6">
-      
-
-          {/* {error && (
-            <Alert variant="destructive">
-               <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>Error</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )} */}
-{userData?.live_role !== "Admin" && <div className="space-y-2">
-            <label htmlFor="video-device" className="text-sm font-medium">
-              Camera
-            </label>
-            <Select
-          value={selectedDevice}
-          onValueChange={setSelectedDevice}
-          // disabled={!isRoomJoined}
-        >
-          <SelectTrigger className="w-[280px]" id="video-device">
-            <SelectValue placeholder="Select a video device..." />
-          </SelectTrigger>
-          <SelectContent className="">
-            {videoDevices.map((device) => (
-              <SelectItem
-                key={device?.deviceId}
-                value={device?.deviceId || "h"}
+          <Card className="w-full max-w-2xl">
+            <CardHeader>
+              <CardTitle className="text-2xl">Ready to Join?</CardTitle>
+              {userData?.live_role === "Student" && (
+                <CardDescription>
+                  Configure your video device before entering the room.
+                </CardDescription>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {userData?.live_role === "Student" && (
+                <div className="flex gap-1">
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="video-device"
+                      className="text-sm font-medium"
+                    >
+                      Camera
+                    </label>
+                    <div className="flex gap-1">
+                      <Select
+                        value={selectedDevice}
+                        onValueChange={setSelectedDevice}
+                      >
+                        <SelectTrigger className="w-[280px]" id="video-device">
+                          <SelectValue placeholder="Select a video device..." />
+                        </SelectTrigger>
+                        <SelectContent className="">
+                          {videoDevices.map((device) => (
+                            <SelectItem
+                              key={device?.deviceId}
+                              value={device?.deviceId || "h"}
+                            >
+                              {device?.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button variant="outline" size="icon" onClick={refreshDevice}>
+                            <RefreshCwIcon className="text-primary" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Refresh Device</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+            <CardFooter>
+              <Button
+                variant="default"
+                onClick={() => handleJoin(roomId, userData!, peerId, "Student")}
+                disabled={
+                  !isConnected ||
+                  isRoomJoined ||
+                  isJoining ||
+                  (userData?.live_role === "Student" && !selectedDevice)
+                }
+                className="bg-primary font-bold py-2 px-4 rounded-lg transition-colors"
               >
-                {device?.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-            
-          </div>}
-          
-        </CardContent>
-        <CardFooter>
-        <Button
-          variant="default"
-          onClick={() => handleJoin(roomId, userData, "Student")}
-          disabled={!isConnected || isRoomJoined || isJoining || (userData?.live_role === "Student" && !selectedDevice)}
-          className="bg-primary font-bold py-2 px-4 rounded-lg transition-colors"
-        >
-          {/* Join Room */}
-          {isJoining ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Loading Devices...
-              </>
-            ) : (
-              "Join Room"
-            )}
-        </Button>
-          {/* <Button
-            className="w-full"
-            onClick={handleJoinClick}
-            disabled={!selectedDeviceId || isLoading || error}
-          >
-            
-          </Button> */}
-        </CardFooter>
-      </Card>
-    </div>
-        
-        
+                {isJoining ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Loading Devices...
+                  </>
+                ) : (
+                  "Join Room"
+                )}
+              </Button>
+            </CardFooter>
+          </Card>
+        </div>
       </div>
     );
   }
+
   if (userData?.live_role === "Student")
-    return <StudentView stream={localVideo} />;
+    return (
+      <div className="flex flex-col min-h-screen max-h-screen">
+        <StudentHeader />
+        <div className="flex grow justify-center">
+          <StudentView stream={localVideo!} />
+        </div>
+      </div>
+    );
   if (userData?.live_role === "Admin" || userData?.live_role === "Teacher")
     return (
       <div className="flex flex-col min-h-screen">
+        <AdminHeader />
         <div className="flex grow justify-center">
           <TeacherView streams={remoteStreams} />
         </div>
       </div>
     );
-
-  return (
-    <div className="bg-gray-900 text-white min-h-screen flex flex-col items-center p-4 font-sans">
-      <h1 className="text-4xl font-bold mb-4">
-        Video Chat {roomId} {userData?.live_role}
-      </h1>
-     
-
-      <div className="w-full max-w-6xl p-4 bg-gray-800 rounded-lg shadow-lg">
-        <div className="flex flex-wrap items-center gap-4 mb-4">
-          <button
-            onClick={() => handleJoin(roomId, "")}
-            disabled={!isConnected || isRoomJoined}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors disabled:bg-gray-500 disabled:cursor-not-allowed"
-          >
-            1. Join Room
-          </button>
-          <Select
-            value={selectedDevice}
-            onValueChange={setSelectedDevice}
-            disabled={!isRoomJoined}
-          >
-            <SelectTrigger className="w-[280px] bg-gray-700 border-gray-600 text-white">
-              <SelectValue placeholder="Select a camera" />
-            </SelectTrigger>
-            <SelectContent className="bg-gray-700 text-white">
-              {videoDevices.map((device) => (
-                <SelectItem
-                  key={device?.deviceId}
-                  value={device?.deviceId || "h"}
-                >
-                  {device?.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {/* ... The rest of your JSX remains the same ... */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* <div className="bg-gray-700 p-3 rounded-lg">
-            <h2 className="text-xl mb-2">My Video</h2>
-            <div className="aspect-video bg-black rounded-md overflow-hidden">
-              {localVideo && (
-                <VideoStream consumerId="user" stream={localVideo} />
-              )}
-            </div>
-          </div> */}
-          {userData?.live_role !== "Admin" && (
-            <div className="bg-gray-700 p-3 rounded-lg">
-              <h2 className="text-xl mb-2">My Video</h2>
-              <div className="aspect-video bg-black rounded-md overflow-hidden">
-                {localVideo && (
-                  <VideoStream consumerId="user" stream={localVideo} />
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="bg-gray-700 p-3 rounded-lg">
-            <h2 className="text-xl mb-2">
-              Remote Videos ({remoteStreams.length})
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {remoteStreams.map(({ stream, consumerId }) => (
-                <VideoStream
-                  key={consumerId}
-                  stream={stream}
-                  consumerId={consumerId}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4 text-sm text-gray-500">
-        Status:{" "}
-        {isConnected ? (
-          <span className="text-green-400">Connected</span>
-        ) : (
-          <span className="text-red-400">Disconnected</span>
-        )}
-      </div>
-    </div>
-  );
+  return <NoTokenScreen />;
 }
 
 const DynamicVideoChat = dynamic(() => Promise.resolve(VideoChat), {

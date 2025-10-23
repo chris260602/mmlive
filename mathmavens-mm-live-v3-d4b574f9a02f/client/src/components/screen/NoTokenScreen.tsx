@@ -39,7 +39,7 @@ export default function NoTokenScreen() {
               Go back
             </Button>
 
-            <Link
+            {/* <Link
               href="/contact"
               className="w-full bg-transparent hover:bg-gray-50 text-gray-600 font-medium py-2 px-4 rounded-md transition-colors duration-200 flex items-center justify-center"
             >
@@ -52,7 +52,7 @@ export default function NoTokenScreen() {
                 />
               </svg>
               Contact Support
-            </Link>
+            </Link> */}
           </div>
 
           <div className="text-center">

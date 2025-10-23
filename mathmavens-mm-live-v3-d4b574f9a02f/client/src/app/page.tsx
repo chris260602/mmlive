@@ -7,10 +7,8 @@ import { useRouter } from "next/navigation";
 export default function Home() {
   const router = useRouter();
 
-  // This function will navigate the user to the main lobby or room page.
-  // Change '/stream' to your application's main entry point if it's different.
   const handleNavigate = () => {
-    router.push(process.env.NEXT_PUBLIC_ELEARNING_PORTAL || ""); // Or '/lobby', '/join', etc.
+    router.push(process.env.NEXT_PUBLIC_ELEARNING_PORTAL || "");
   };
 
   return (

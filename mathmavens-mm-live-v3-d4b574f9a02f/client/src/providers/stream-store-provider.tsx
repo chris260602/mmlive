@@ -16,12 +16,16 @@ import {
 import { ws } from "@/ws";
 import {
   getAllUserVideoInput,
+  requestCameraPermission,
 } from "@/utils/deviceUtils";
-import { useUserStore } from "./user-store-provider";
-import { useShallow } from "zustand/shallow";
+import { UserStoreContext } from "./user-store-provider";
+import { toast } from "sonner";
+import { isLocal, isProd } from "@/utils/envUtils";
+import * as Sentry from "@sentry/nextjs";
 
 export type StreamStoreApi = ReturnType<typeof createStreamStore>;
 
+let isRestarting = false;
 export const StreamStoreContext = createContext<StreamStoreApi | undefined>(
   undefined
 );
@@ -31,32 +35,33 @@ export interface StreamStoreProviderProps {
 }
 
 export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
-  const {
-    roomId,userData
-  } = useUserStore(
-    useShallow((state) => ({
-      roomId:state.roomId,
-      userData:state.userData
-    }))
-  );
+  const userStoreApi = useContext(UserStoreContext);
+
+  // Add a check to ensure the provider is mounted correctly
+  if (!userStoreApi) {
+    throw new Error(
+      "StreamStoreProvider must be used within a UserStoreProvider"
+    );
+  }
   const storeRef = useRef<StreamStoreApi | null>(null);
   if (storeRef.current === null) {
-    storeRef.current = createStreamStore(initStreamStore());
+    storeRef.current = createStreamStore(initStreamStore(), userStoreApi);
   }
 
   const initApp = async () => {
-    const { setVideoDevices,setIsDeviceLoading } = storeRef.current!.getState();
+    const { setVideoDevices, setIsDeviceLoading } =
+      storeRef.current!.getState();
     setIsDeviceLoading(true);
-    try{
+    try {
+      await requestCameraPermission();
       const devices = await getAllUserVideoInput();
       setVideoDevices(devices);
-    }catch(err){
-      //@ ALERT HERE
+    } catch (err) {
+      toast.error("No Device Found");
       setVideoDevices([]);
-    }finally{
+    } finally {
       setIsDeviceLoading(false);
     }
-    
   };
 
   useEffect(() => {
@@ -66,42 +71,313 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
       setSocket,
       setIsConnected,
       consume,
-      handleJoin
+      setupSocketEventHandlers,
+      startHeartbeat,
+      stopHeartbeat,
+      setConnectionQuality,
+      updateConnectionStatus,
     } = storeRef.current!.getState();
     setSocket(ws);
+    setupSocketEventHandlers();
     initApp();
-    ws.on("connect", async() => {
+    ws.on("connect", async () => {
       console.log("Connected to signaling server with ID:", ws.id);
       setIsConnected(true);
-      
+      updateConnectionStatus();
+      startHeartbeat();
     });
 
     ws.on("disconnect", () => {
       console.log("Disconnected from signaling server");
       setIsConnected(false);
+      updateConnectionStatus();
+      stopHeartbeat();
+    });
+
+    ws.on("connect_error", (error) => {
+      console.error("Connection error:", error);
+      if (!isLocal())
+        Sentry.captureException(error, {
+          tags: {
+            operation: "websocket_connect",
+            errorType: "connect_error",
+          },
+          level: "error",
+        });
+      updateConnectionStatus();
+    });
+
+    // Handle reconnection events
+    ws.on("reconnect", (attemptNumber) => {
+      console.log(`Reconnected after ${attemptNumber} attempts`);
+      updateConnectionStatus();
+    });
+
+    ws.on("reconnecting", (attemptNumber) => {
+      console.log(`Reconnecting... attempt ${attemptNumber}`);
+      updateConnectionStatus();
+    });
+
+    ws.on("reconnect_error", (error) => {
+      console.error("Reconnection error:", error);
+      updateConnectionStatus();
+    });
+
+    ws.on("reconnect_failed", () => {
+      console.error("Failed to reconnect after all attempts");
+      updateConnectionStatus();
     });
 
     // When a new remote stream is avaiable
-    ws.on("new-producer", async ({ producerId }) => {
-      console.log(`A new producer is available: ${producerId}`);
-      await consume(producerId);
-      // if(userData && userData.live_role !== 'Student')await consume(producerId);
+    ws.on("new-producer", async ({ producerId, userData, kind }) => {
+      console.log(`A new producer is available: ${producerId} (${kind})`);
+      try {
+        const {
+          addAvailableProducer,
+          consume,
+          availableProducers,
+          isProducerBeingConsumed,
+          pendingConsumers,
+        } = storeRef.current!.getState();
+
+        if (availableProducers.has(producerId)) {
+          console.log(`Producer ${producerId} already known, skipping`);
+          return;
+        }
+
+        // Check if already consuming
+        if (
+          isProducerBeingConsumed(producerId) ||
+          pendingConsumers.has(producerId)
+        ) {
+          console.log(
+            `Producer ${producerId} already being consumed, skipping`
+          );
+          return;
+        }
+
+        // Track the new producer
+        addAvailableProducer(producerId, userData, kind || "video");
+        setTimeout(async () => {
+          try {
+            // This await is still important for handling the result and errors
+            // for this specific consume call.
+            await consume(producerId);
+            console.log("Consumption successful!");
+          } catch (error) {
+            console.error("Failed to consume:", error);
+          }
+        }, Math.random() * 1000);
+      } catch (error) {
+        console.error("Failed to consume new producer:", error);
+      }
     });
 
     // When one or more remote stream is leaving
     ws.on("consumer-closed", ({ consumerId }) => {
       console.log(`A consumer has been closed: ${consumerId}`);
+      const { removeRemoteStream, removeActiveConsumer } =
+        storeRef.current!.getState();
       removeRemoteStream(consumerId);
-      // setRemoteStreams(prevStreams =>
-      //     prevStreams.filter(s => s.consumerId !== consumerId)
-      // );
+      removeActiveConsumer(consumerId);
     });
 
+    // Handle producer closed (when someone stops sharing)
+    ws.on("producer-closed", ({ producerId }) => {
+      console.log(`A producer has been closed: ${producerId}`);
+      const {
+        removeAvailableProducer,
+        remoteStreams,
+        removeRemoteStream,
+        activeConsumers,
+      } = storeRef.current!.getState();
+
+      // Remove from available producers
+      removeAvailableProducer(producerId);
+
+      // Find and remove ALL associated consumers for this producer
+      const consumersToRemove = Array.from(activeConsumers.entries())
+        .filter(([_, consumer]) => consumer.producerId === producerId)
+        .map(([consumerId]) => consumerId);
+
+      console.log(
+        `Removing ${consumersToRemove.length} consumers for producer ${producerId}`
+      );
+
+      consumersToRemove.forEach((consumerId) => {
+        removeRemoteStream(consumerId);
+        storeRef.current!.getState().removeActiveConsumer(consumerId);
+      });
+    });
+
+    ws.on("peer-left", ({ peerId }) => {
+      console.log(`Peer left: ${peerId}`);
+      // Remove streams from this peer
+      const { remoteStreams, setRemoteStreams } = storeRef.current!.getState();
+      const updatedStreams = remoteStreams.filter(
+        (stream) => stream.userData?.peerId !== peerId
+      );
+      setRemoteStreams(updatedStreams);
+    });
+
+    ws.on("refresh-student-client", ({ peerId, userId }) => {
+      const { selectedDevice: currDevice } = storeRef.current!.getState();
+      const {
+        roomId,
+        userData,
+        peerId: currentPeerId,
+      } = userStoreApi.getState();
+
+      if (peerId === currentPeerId && userData!.id === userId) {
+        const dataToStore = {
+          is_restart: true,
+          media: currDevice,
+          room: roomId,
+          userData: userData,
+          peerId: peerId,
+        };
+
+        // 2. Stringify the entire object and save it.
+        sessionStorage.setItem("student_restart", JSON.stringify(dataToStore));
+        window.location.reload();
+      }
+    });
+
+    ws.on("kick-student-client", ({ peerId, userId }) => {
+      const { userData, peerId: currentPeerId } = userStoreApi.getState();
+
+      if (peerId === currentPeerId && userData!.id === userId) {
+        const { handleLeaveRoom } = storeRef.current!.getState();
+        toast.error("Kicked from the room");
+        handleLeaveRoom();
+      }
+    });
+
+    ws.on("heartbeat", (data) => {
+      ws.emit("heartbeat-response", {
+        timestamp: Date.now(),
+        receivedAt: data.timestamp,
+      });
+    });
+
+    // Enhanced transport monitoring events
+    ws.on("transport-ice-connected", ({ transportId }) => {
+      console.log(`Transport ${transportId} ICE connected`);
+      const { setConnectionQuality } = storeRef.current!.getState();
+      updateConnectionStatus();
+    });
+
+    ws.on("transport-ice-disconnected", ({ transportId }) => {
+      console.warn(`Transport ${transportId} ICE disconnected`);
+      const { setConnectionQuality } = storeRef.current!.getState();
+      updateConnectionStatus();
+    });
+
+    ws.on("transport-ice-failed", ({ transportId }) => {
+      console.error(`Transport ${transportId} ICE failed`);
+      const { setConnectionQuality, handleTransportFailure } =
+        storeRef.current!.getState();
+      updateConnectionStatus();
+
+      // Determine transport type and trigger recovery
+      const { sendTransportRef, recvTransportRef } =
+        storeRef.current!.getState();
+      if (sendTransportRef?.id === transportId) {
+        handleTransportFailure("send");
+      } else if (recvTransportRef?.id === transportId) {
+        handleTransportFailure("receive");
+      }
+    });
+
+    ws.on("transport-closed", ({ transportId, reason }) => {
+      console.log(
+        `Server notified: transport ${transportId} closed (${reason})`
+      );
+
+      const { sendTransportRef, recvTransportRef } =
+        storeRef.current!.getState();
+
+      // Identify which transport was closed and trigger recovery
+      if (sendTransportRef?.id === transportId) {
+        console.log("Send transport was closed by server");
+        storeRef.current!.getState().handleTransportFailure("send");
+      } else if (recvTransportRef?.id === transportId) {
+        console.log("Receive transport was closed by server");
+        storeRef.current!.getState().handleTransportFailure("receive");
+      }
+    });
+
+    ws.on("transport-dtls-failed", ({ transportId }) => {
+      console.error(`Transport ${transportId} DTLS failed`);
+      const { setConnectionQuality, handleTransportFailure } =
+        storeRef.current!.getState();
+      updateConnectionStatus();
+
+      // Trigger recovery based on transport type
+      const { sendTransportRef, recvTransportRef } =
+        storeRef.current!.getState();
+      if (sendTransportRef?.id === transportId) {
+        handleTransportFailure("send");
+      } else if (recvTransportRef?.id === transportId) {
+        handleTransportFailure("receive");
+      }
+    });
+
+    ws.on(
+      "transport-quality-update",
+      ({ transportId, rtt, packetLossRate, quality }) => {
+        console.log(
+          `Transport ${transportId} quality: ${quality} (RTT: ${rtt}ms, Loss: ${packetLossRate}%)`
+        );
+        const { setConnectionQuality } = storeRef.current!.getState();
+        setConnectionQuality(quality);
+
+        // You could also show this info in your UI
+        if (quality === "poor") {
+          console.warn("Poor connection quality detected");
+        }
+      }
+    );
+
+    const monitorConnection = () => {
+      const interval = setInterval(() => {
+        const { isConnected } = storeRef.current!.getState();
+        if (!ws.connected && isConnected) {
+          setIsConnected(false);
+          updateConnectionStatus();
+        } else if (ws.connected && !isConnected) {
+          setIsConnected(true);
+          updateConnectionStatus();
+        } else if (!ws.connected || !isConnected) {
+          updateConnectionStatus();
+        }
+      }, 1000);
+
+      return () => clearInterval(interval);
+    };
+
+    const cleanupMonitoring = monitorConnection();
+
     return () => {
+      cleanupMonitoring();
       ws.off("connect");
       ws.off("disconnect");
+      ws.off("connect_error");
+      ws.off("reconnect");
+      ws.off("reconnecting");
+      ws.off("reconnect_error");
+      ws.off("reconnect_failed");
       ws.off("new-producer");
       ws.off("consumer-closed");
+      ws.off("producer-closed");
+      ws.off("peer-left");
+      ws.off("refresh-student-client");
+      ws.off("heartbeat");
+      ws.off("transport-ice-connected");
+      ws.off("transport-ice-disconnected");
+      ws.off("transport-ice-failed");
+      ws.off("transport-dtls-failed");
+      ws.off("transport-quality-update");
       //   if (ws) ws.disconnect();
       // Also clean up local media stream
       if (localVideo) {
@@ -110,7 +386,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
     };
   }, []);
 
-  // NEW: This effect handles switching the camera when the selected device changes
+  // This effect handles switching the camera when the selected device changes
   useEffect(() => {
     const unsubscribe = storeRef.current!.subscribe(
       // The callback runs on every state change
@@ -120,7 +396,11 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
           console.log("Selected device changed:", state.selectedDevice);
 
           // Your existing logic
-          if (state.isRoomJoined && state.selectedDevice && state.sendTransportRef) {
+          if (
+            state.isRoomJoined &&
+            state.selectedDevice &&
+            state.sendTransportRef
+          ) {
             state.handleCameraChange();
           }
         }
@@ -134,11 +414,111 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
   }, []);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      console.log("Attaching stream store to window.testApi for testing.");
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).testApi = storeRef.current;
+    // Prevent this effect from running again if it's already in progress
+    if (isRestarting) return;
+
+    const { setSelectedDevice, handleJoin } = storeRef.current!.getState();
+    const restartRaw = sessionStorage.getItem("student_restart");
+
+    if (restartRaw) {
+      // 1. Immediately remove the item to prevent the next run from finding it
+      sessionStorage.removeItem("student_restart");
+
+      try {
+        const restartConfig = JSON.parse(restartRaw);
+        console.log("Restart configuration found:", restartConfig);
+
+        if (restartConfig.is_restart) {
+          // 2. Set the flag to true
+          isRestarting = true;
+
+          const runRestart = async () => {
+            if (restartConfig.media) {
+              setSelectedDevice(restartConfig.media);
+              await handleJoin(
+                restartConfig.room,
+                restartConfig.userData,
+                restartConfig.peerId,
+                "Student"
+              );
+            }
+          };
+
+          runRestart();
+        }
+      } catch (error) {
+        console.error("Failed to parse restart configuration:", error);
+        // The item is already removed, so no need to remove it again here.
+      }
     }
+  }, []); // Empty dependency array is correct
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        console.log("Tab became hidden");
+        // Optionally pause non-essential operations
+      } else {
+        console.log("Tab became visible");
+        const { isConnected, socket, connectionQuality } =
+          storeRef.current!.getState();
+
+        // Check connection status when tab becomes visible
+        if (!isConnected && socket) {
+          console.log(
+            "Tab visible but not connected, attempting reconnection..."
+          );
+          storeRef.current!.getState().attemptReconnection();
+        }
+
+        // Send heartbeat immediately on visibility
+        if (isConnected && socket) {
+          socket.emit("heartbeat-response", {
+            timestamp: Date.now(),
+            quality: connectionQuality,
+          });
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  // Handle online/offline events
+  useEffect(() => {
+    const handleOnline = () => {
+      console.log("Connecting to network");
+      if (!isProd()) toast.success("Connecting to network");
+      const { attemptReconnection } = storeRef.current!.getState();
+      attemptReconnection();
+    };
+
+    const handleOffline = () => {
+      console.log("Network connection lost");
+      toast.error("Network connection lost");
+      const { updateConnectionStatus } = storeRef.current!.getState();
+      updateConnectionStatus();
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    // if (process.env.NODE_ENV === "development") {
+    console.log("Attaching stream store to window.testApi for testing.");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).testApi = storeRef.current;
+    // }
   }, []);
 
   return (

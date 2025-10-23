@@ -1,0 +1,641 @@
+import { Server } from "socket.io/dist";
+import { roomJoinQueueEvents, transportQueue } from "../bullmq";
+import { transportQueueEvents } from "../bullmq";
+import { roomJoinQueue } from "../bullmq";
+import { CONFIG } from "../config/config";
+import logger from "../logger";
+import { publishToRoom, redis } from "../redis";
+import { UAParser } from "ua-parser-js";
+import { cleanupPeer } from "../cleanup";
+import { getPeer } from "../peerManager";
+import { getRoomFromSocketId } from "../peerManager";
+import { findPeerByProducerId } from "../peerManager";
+import { isLocal } from "../utils/envUtils";
+
+export const initializeSocketIO = (io: Server) => {
+io.on("connection", (socket: any) => {
+  const userAgentString = socket.handshake.headers["user-agent"];
+  const parser = new UAParser(userAgentString);
+  const result = parser.getResult();
+  socket.clientInfo = {
+    browser: `${result.browser.name || "Unknown"} ${
+      result.browser.version || ""
+    }`.trim(),
+    os: `${result.os.name || "Unknown"} ${result.os.version || ""}`.trim(),
+    device: result.device.vendor
+      ? `${result.device.vendor} ${result.device.model}`
+      : "Desktop",
+  };
+  logger.info("Client connected", {
+    socketId: socket.id,
+    ip: socket.handshake.address,
+    ...socket.clientInfo,
+  });
+
+  socket.data.transports = new Map();
+  socket.data.producers = new Map();
+  socket.data.consumers = new Map();
+
+  socket.on("disconnect", async (reason: string) => {
+    logger.info("Client disconnected", { socketId: socket.id, reason });
+
+    try {
+      const [roomJobs, transportJobs] = await Promise.all([
+        roomJoinQueue.getJobs(["waiting", "active", "delayed"]),
+        transportQueue.getJobs(["waiting", "active", "delayed"]),
+      ]);
+
+      const jobsToRemove = [
+        ...roomJobs.filter((job) => job.data.socketId === socket.id),
+        ...transportJobs.filter((job) => job.data.socketId === socket.id),
+      ];
+
+      await Promise.all(jobsToRemove.map((job) => job.remove()));
+
+      logger.info("Removed pending jobs for disconnected socket", {
+        socketId: socket.id,
+        removedCount: jobsToRemove.length,
+      });
+    } catch (error) {
+      logger.error("Error removing jobs on disconnect", {
+        socketId: socket.id,
+        error,
+      });
+    }
+    await cleanupPeer(socket);
+  });
+
+  socket.on("leaveRoom", async () => {
+    await cleanupPeer(socket);
+  });
+
+  socket.on(
+    "refresh-student-server",
+    async ({ peerId, userId }: { peerId: string; userId: string }) => {
+      if (peerId)
+        socket.to(peerId).emit("refresh-student-client", { peerId, userId });
+    }
+  );
+  socket.on(
+    "kick-student-server",
+    async ({ peerId, userId }: { peerId: string; userId: string }) => {
+      if (peerId)
+        socket.to(peerId).emit("kick-student-client", { peerId, userId });
+    }
+  );
+
+  socket.on(
+    "joinRoom",
+    async (
+      {
+        roomName,
+        userData,
+        peerId,
+      }: {
+        peerId: string;
+        userData: object;
+        roomName: string;
+      },
+      callback: Function
+    ) => {
+      try {
+        logger.info("Join room request received", {
+          socketId: socket.id,
+          roomName,
+          peerId,
+        });
+
+        // Add job to queue
+        const job = await roomJoinQueue.add(
+          "join-room",
+          {
+            socketId: socket.id,
+            roomName,
+            userData,
+            peerId,
+          },
+          {
+            jobId: `join-${socket.id}-${Date.now()}`,
+            priority: 1,
+            // timeout: 30000,
+          }
+        );
+
+        logger.info("Room join job queued", {
+          jobId: job.id,
+          socketId: socket.id,
+          roomName,
+        });
+
+        // Wait for job completion with extended timeout and retries
+        try {
+          const result = await job.waitUntilFinished(
+            roomJoinQueueEvents,
+            45000
+          ); // Increased from 30s to 45s
+
+          if (result.success) {
+            callback({
+              rtpCapabilities: result.rtpCapabilities,
+              producersData: result.producersData,
+            });
+          } else {
+            callback({ error: result.error || "Failed to join room" });
+          }
+        } catch (waitError: any) {
+          // If waitUntilFinished times out, check job status manually
+          logger.warn("Wait timed out, checking job status manually", {
+            jobId: job.id,
+            socketId: socket.id,
+          });
+
+          const jobState = await job.getState();
+
+          if (jobState === "completed") {
+            // Job completed but notification was missed
+            const result = await job.returnvalue;
+            logger.info("Job completed, notification was delayed", {
+              jobId: job.id,
+              socketId: socket.id,
+            });
+
+            if (result.success) {
+              callback({
+                rtpCapabilities: result.rtpCapabilities,
+                producersData: result.producersData,
+              });
+            } else {
+              callback({ error: result.error || "Failed to join room" });
+            }
+          } else if (jobState === "failed") {
+            const failedReason = job.failedReason || "Unknown error";
+            logger.error("Job failed", { jobId: job.id, failedReason });
+            callback({ error: failedReason });
+          } else {
+            // Job is still processing or stuck
+            logger.error("Job still processing or stuck", {
+              jobId: job.id,
+              state: jobState,
+            });
+            callback({ error: "Request timeout - please try again" });
+          }
+        }
+      } catch (e: any) {
+        logger.error("Failed to queue room join", {
+          roomName,
+          peerId,
+          socketId: socket.id,
+          error: e.message,
+          stack: e.stack,
+        });
+        if(!isLocal())Sentry.captureException(e, {
+          tags: { socketId: socket.id, roomName, peerId },
+        });
+        callback({ error: e.message || "Failed to join room" });
+      }
+    }
+  );
+
+  socket.on(
+    "createWebRtcTransport",
+    async ({ isSender }: { isSender: boolean }, callback: Function) => {
+      try {
+        const roomData = await getRoomFromSocketId(socket.id);
+        if (!roomData.router) {
+          return callback({ error: "Not in a room" });
+        }
+
+        logger.debug("Creating WebRTC transport via queue", {
+          socketId: socket.id,
+          isSender,
+        });
+
+        const job = await transportQueue.add(
+          "create-transport",
+          {
+            socketId: socket.id,
+            isSender,
+            routerId: roomData.router.id,
+          },
+          {
+            jobId: `transport-${socket.id}-${Date.now()}`,
+            priority: isSender ? 1 : 2,
+            timeout: 20000,
+          }
+        );
+
+        logger.info("Transport creation job queued", {
+          jobId: job.id,
+          socketId: socket.id,
+          isSender,
+        });
+
+        // Use persistent transportQueueEvents instead of creating new one
+        try {
+          const result = await job.waitUntilFinished(
+            transportQueueEvents,
+            30000
+          ); // Increased timeout
+
+          if (result.success) {
+            callback({ params: result.params });
+          } else {
+            callback({ error: result.error || "Failed to create transport" });
+          }
+        } catch (waitError: any) {
+          // Manual status check on timeout
+          logger.warn("Transport wait timed out, checking job status", {
+            jobId: job.id,
+            socketId: socket.id,
+          });
+
+          const jobState = await job.getState();
+
+          if (jobState === "completed") {
+            const result = await job.returnvalue;
+            logger.info("Transport job completed, notification delayed", {
+              jobId: job.id,
+              socketId: socket.id,
+            });
+
+            if (result.success) {
+              callback({ params: result.params });
+            } else {
+              callback({ error: result.error || "Failed to create transport" });
+            }
+          } else if (jobState === "failed") {
+            const failedReason = job.failedReason || "Unknown error";
+            logger.error("Transport job failed", {
+              jobId: job.id,
+              failedReason,
+            });
+            callback({ error: failedReason });
+          } else {
+            logger.error("Transport job stuck", {
+              jobId: job.id,
+              state: jobState,
+            });
+            callback({
+              error: "Transport creation timeout - please try again",
+            });
+          }
+        }
+      } catch (e: any) {
+        logger.error("Failed to queue transport creation", {
+          socketId: socket.id,
+          error: e.message,
+          stack: e.stack,
+        });
+        if(!isLocal())Sentry.captureException(e, {
+          tags: { socketId: socket.id, action: "createWebRtcTransport" },
+        });
+        callback({ error: e.message });
+      }
+    }
+  );
+
+  socket.on(
+    "connectTransport",
+    async ({ transportId, dtlsParameters }, callback:Function) => {
+      try {
+        const transport = socket.data.transports.get(transportId);
+        if (!transport) throw new Error(`Transport not found`);
+        logger.debug("Connecting transport", {
+          transportId,
+          socketId: socket.id,
+        });
+        await transport.connect({ dtlsParameters });
+        logger.info("Transport connected", {
+          transportId,
+          socketId: socket.id,
+        });
+        callback({});
+      } catch (e: any) {
+        logger.error("Failed to connect transport", {
+          transportId,
+          socketId: socket.id,
+          error: e.message,
+        });
+        callback({ error: e.message });
+      }
+    }
+  );
+
+  socket.on(
+    "produce",
+    async ({ kind, rtpParameters, transportId, roomName }, callback:Function) => {
+      try {
+        const transport = socket.data.transports.get(transportId);
+        if (!transport) return callback({ error: `Transport not found` });
+        const producer = await transport.produce({ kind, rtpParameters });
+
+        socket.data.producers.set(producer.id, producer);
+        await redis.set(
+          `producer:${producer.id}:peer`,
+          socket.id,
+          "EX",
+          CONFIG.redis.keyTTL.producer
+        );
+
+        producer.on("transportclose", () => {
+          logger.info("Producer transport closed", {
+            producerId: producer.id,
+            socketId: socket.id,
+          });
+          socket.data.producers.delete(producer.id);
+          redis.del(`producer:${producer.id}:peer`).catch((err) => {
+            logger.error("Error deleting producer from Redis", {
+              producerId: producer.id,
+              error: err,
+            });
+          });
+        });
+
+        producer.on("score", (score) => {
+          logger.debug("Producer score", {
+            producerId: producer.id,
+            score,
+          });
+        });
+
+        const peer = await getPeer(socket.id);
+        await publishToRoom(
+          roomName,
+          "new-producer",
+          { producerId: producer.id, userData: peer, kind },
+          socket.id
+        );
+
+        callback({ id: producer.id });
+      } catch (e: any) {
+        logger.error("Failed to create producer", {
+          kind,
+          transportId,
+          socketId: socket.id,
+          error: e.message,
+          stack: e.stack,
+        });
+        if(!isLocal())Sentry.captureException(e, {
+          tags: { socketId: socket.id, action: "produce" },
+        });
+        callback({ error: e.message });
+      }
+    }
+  );
+
+  socket.on(
+    "consume",
+    async ({ transportId, producerId, rtpCapabilities }, callback:Function) => {
+      try {
+        const { router } = await getRoomFromSocketId(socket.id);
+        const transport = socket.data.transports.get(transportId);
+        if (!router || !transport)
+          return callback({ error: "Router or Transport not found" });
+
+        if (!router.canConsume({ producerId, rtpCapabilities })) {
+          logger.warn("Cannot consume", { producerId, socketId: socket.id });
+          return callback({ error: "Cannot consume" });
+        }
+
+        const producingPeer = await findPeerByProducerId(producerId);
+        if (!producingPeer)
+          return callback({ error: "Producing peer not found" });
+
+        const consumer = await transport.consume({
+          producerId,
+          rtpCapabilities,
+          paused: true,
+        });
+        socket.data.consumers.set(consumer.id, consumer);
+
+        consumer.on("producerclose", () => {
+          socket.data.consumers.delete(consumer.id);
+          socket.emit("consumer-closed", { consumerId: consumer.id });
+        });
+        consumer.on("producerpause", () => {
+          socket.emit("consumer-producer-paused", { consumerId: consumer.id });
+        });
+
+        consumer.on("producerresume", () => {
+          socket.emit("consumer-producer-resumed", { consumerId: consumer.id });
+        });
+        consumer.on("transportclose", () => {
+          socket.data.consumers.delete(consumer.id);
+        });
+
+        callback({
+          params: {
+            id: consumer.id,
+            producerId,
+            kind: consumer.kind,
+            rtpParameters: consumer.rtpParameters,
+            userData: producingPeer,
+          },
+        });
+      } catch (error: any) {
+        logger.error("Failed to create consumer", {
+          producerId,
+          transportId,
+          socketId: socket.id,
+          error: error.message,
+          stack: error.stack,
+        });
+        if(!isLocal())Sentry.captureException(error, {
+          tags: { socketId: socket.id, action: "consume" },
+        });
+        callback({ error: error.message });
+      }
+    }
+  );
+
+  socket.on("resume", async ({ consumerId }:{consumerId:string}, callback:Function) => {
+    try {
+      const consumer = socket.data.consumers.get(consumerId);
+      if (!consumer) {
+        logger.warn("Consumer not found for resume", {
+          consumerId,
+          socketId: socket.id,
+        });
+        if (callback) callback({ error: "Consumer not found" });
+        return;
+      }
+
+      await consumer.resume();
+
+      logger.debug("Consumer resumed", { consumerId, socketId: socket.id });
+
+      if (callback) callback({});
+    } catch (error: any) {
+      logger.error("Error resuming consumer", {
+        consumerId,
+        socketId: socket.id,
+        error: error.message,
+      });
+      if (callback) callback({ error: error.message });
+    }
+  });
+
+  socket.on("pauseProducer", async ({ producerId }:{producerId:string}, callback:Function) => {
+    try {
+      const producer = socket.data.producers.get(producerId);
+      if (!producer) {
+        logger.warn("Producer not found for pause", {
+          producerId,
+          socketId: socket.id,
+        });
+        if (callback) callback({ error: "Producer not found" });
+        return;
+      }
+
+      await producer.pause();
+
+      logger.info("Producer paused", { producerId, socketId: socket.id });
+
+      const roomName = await redis.get(`peer:${socket.id}:room`);
+      if (roomName) {
+        const peer = await getPeer(socket.id);
+        await publishToRoom(
+          roomName,
+          "producer-paused",
+          { producerId, peerId: peer?.peerId },
+          socket.id
+        );
+      }
+
+      if (callback) callback({});
+    } catch (error: any) {
+      logger.error("Error pausing producer", {
+        producerId,
+        socketId: socket.id,
+        error: error.message,
+      });
+      if (callback) callback({ error: error.message });
+    }
+  });
+
+  // --- RESUME PRODUCER HANDLER ---
+  socket.on("resumeProducer", async ({ producerId }:{producerId:string}, callback:Function) => {
+    try {
+      const producer = socket.data.producers.get(producerId);
+      if (!producer) {
+        logger.warn("Producer not found for resume", {
+          producerId,
+          socketId: socket.id,
+        });
+        if (callback) callback({ error: "Producer not found" });
+        return;
+      }
+
+      await producer.resume();
+
+      logger.info("Producer resumed", { producerId, socketId: socket.id });
+
+      const roomName = await redis.get(`peer:${socket.id}:room`);
+      if (roomName) {
+        const peer = await getPeer(socket.id);
+        await publishToRoom(
+          roomName,
+          "producer-resumed",
+          { producerId, peerId: peer?.peerId },
+          socket.id
+        );
+      }
+
+      if (callback) callback({});
+    } catch (error: any) {
+      logger.error("Error resuming producer", {
+        producerId,
+        socketId: socket.id,
+        error: error.message,
+      });
+      if (callback) callback({ error: error.message });
+    }
+  });
+
+  // --- CLOSE PRODUCER HANDLER ---
+  socket.on("closeProducer", async ({ producerId }:{producerId:string}, callback:Function) => {
+    try {
+      const producer = socket.data.producers.get(producerId);
+      if (!producer) {
+        logger.warn("Producer not found for close", {
+          producerId,
+          socketId: socket.id,
+        });
+        if (callback) callback({ error: "Producer not found" });
+        return;
+      }
+
+      const roomName = await redis.get(`peer:${socket.id}:room`);
+
+      producer.close();
+      socket.data.producers.delete(producerId);
+      await redis.del(`producer:${producerId}:peer`);
+
+      logger.info("Producer closed", { producerId, socketId: socket.id });
+
+      if (roomName) {
+        const peer = await getPeer(socket.id);
+        await publishToRoom(
+          roomName,
+          "producer-closed",
+          { producerId, peerId: peer?.peerId },
+          socket.id
+        );
+      }
+
+      if (callback) callback({});
+    } catch (error: any) {
+      logger.error("Error closing producer", {
+        producerId,
+        socketId: socket.id,
+        error: error.message,
+      });
+      if (callback) callback({ error: error.message });
+    }
+  });
+
+  // --- GET PRODUCER STATS HANDLER ---
+  socket.on("getProducerStats", async ({ producerId }:{producerId:string}, callback:Function) => {
+    try {
+      console.log(socket.data.producers, "HAIII");
+      const producer = socket.data.producers.get(producerId);
+      if (!producer) {
+        if (callback) callback({ error: "Producer not found" });
+        return;
+      }
+
+      const stats = await producer.getStats();
+      if (callback) callback({ stats: Array.from(stats) });
+    } catch (error: any) {
+      logger.error("Error getting producer stats", {
+        producerId,
+        socketId: socket.id,
+        error: error.message,
+      });
+      if (callback) callback({ error: error.message });
+    }
+  });
+
+  // --- GET CONSUMER STATS HANDLER ---
+  socket.on("getConsumerStats", async ({ consumerId }:{consumerId:string}, callback:Function) => {
+    try {
+      const consumer = socket.data.consumers.get(consumerId);
+      if (!consumer) {
+        if (callback) callback({ error: "Consumer not found" });
+        return;
+      }
+
+      const stats = await consumer.getStats();
+      if (callback) callback({ stats: Array.from(stats) });
+    } catch (error: any) {
+      logger.error("Error getting consumer stats", {
+        consumerId,
+        socketId: socket.id,
+        error: error.message,
+      });
+      if (callback) callback({ error: error.message });
+    }
+  });
+});
+
+}

@@ -4,6 +4,8 @@ import "./globals.css";
 import { StreamStoreProvider } from "@/providers/stream-store-provider";
 import { UserStoreProvider } from "@/providers/user-store-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { Suspense } from "react";
+import LoadingScreen from "@/components/screen/LoadingScreen";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,9 +32,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <Suspense fallback={<LoadingScreen />}>
         <UserStoreProvider>
         <StreamStoreProvider>{children}</StreamStoreProvider>
         </UserStoreProvider>
+        </Suspense>
         <Toaster richColors position="top-right"/>
       </body>
     </html>
