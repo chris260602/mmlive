@@ -7,7 +7,7 @@ import logger from "../logger";
 import { publishToRoom, redis } from "../redis";
 import { UAParser } from "ua-parser-js";
 import { cleanupPeer } from "../cleanup";
-import { getPeer } from "../peerManager";
+import { getPeer, getProducerInfo } from "../peerManager";
 import { getRoomFromSocketId } from "../peerManager";
 import { findPeerByProducerId } from "../peerManager";
 import { isLocal } from "../utils/envUtils";
@@ -323,13 +323,24 @@ io.on("connection", (socket: any) => {
 
   socket.on(
     "produce",
-    async ({ kind, rtpParameters, transportId, roomName }, callback:Function) => {
+    async ({ kind, rtpParameters, transportId, roomName,appData }, callback:Function) => {
+        
       try {
         const transport = socket.data.transports.get(transportId);
         if (!transport) return callback({ error: `Transport not found` });
-        const producer = await transport.produce({ kind, rtpParameters });
+        const producer = await transport.produce({ kind, rtpParameters,appData });
 
         socket.data.producers.set(producer.id, producer);
+
+        const producerInfo = {
+             peerSocketId: socket.id,
+             appData: JSON.stringify(appData || {}), // Store as JSON string
+             kind: kind
+         };
+         await redis.hset(`producer:${producer.id}:info`, producerInfo);
+        await redis.expire(`producer:${producer.id}:info`, CONFIG.redis.keyTTL.producer);
+
+
         await redis.set(
           `producer:${producer.id}:peer`,
           socket.id,
@@ -349,6 +360,12 @@ io.on("connection", (socket: any) => {
               error: err,
             });
           });
+          redis.del(`producer:${producer.id}:info`).catch((err) => {
+            logger.error("Error deleting producer info from Redis", {
+              producerId: producer.id,
+              error: err,
+            });
+          });
         });
 
         producer.on("score", (score) => {
@@ -362,7 +379,7 @@ io.on("connection", (socket: any) => {
         await publishToRoom(
           roomName,
           "new-producer",
-          { producerId: producer.id, userData: peer, kind },
+          { producerId: producer.id, userData: peer, kind,appData },
           socket.id
         );
 
@@ -372,6 +389,7 @@ io.on("connection", (socket: any) => {
           kind,
           transportId,
           socketId: socket.id,
+          appData,
           error: e.message,
           stack: e.stack,
         });
@@ -397,7 +415,7 @@ io.on("connection", (socket: any) => {
           return callback({ error: "Cannot consume" });
         }
 
-        const producingPeer = await findPeerByProducerId(producerId);
+        const producingPeer = await getProducerInfo(producerId);
         if (!producingPeer)
           return callback({ error: "Producing peer not found" });
 
@@ -405,6 +423,7 @@ io.on("connection", (socket: any) => {
           producerId,
           rtpCapabilities,
           paused: true,
+          appData: { ...(producingPeer.appData || {}), consumerSocketId: socket.id }
         });
         socket.data.consumers.set(consumer.id, consumer);
 
@@ -429,7 +448,8 @@ io.on("connection", (socket: any) => {
             producerId,
             kind: consumer.kind,
             rtpParameters: consumer.rtpParameters,
-            userData: producingPeer,
+            userData: producingPeer.peerUserData,
+            appData:producingPeer.appData
           },
         });
       } catch (error: any) {
@@ -570,7 +590,7 @@ io.on("connection", (socket: any) => {
       producer.close();
       socket.data.producers.delete(producerId);
       await redis.del(`producer:${producerId}:peer`);
-
+      await redis.del(`producer:${producerId}:info`);
       logger.info("Producer closed", { producerId, socketId: socket.id });
 
       if (roomName) {
@@ -593,6 +613,40 @@ io.on("connection", (socket: any) => {
       if (callback) callback({ error: error.message });
     }
   });
+
+  socket.on("pauseConsumer", async ({ consumerId }, callback) => {
+  try {
+    const consumer = socket.data.consumers.get(consumerId);
+    if (!consumer) {
+      if (callback) callback({ error: "Consumer not found" });
+      return;
+    }
+
+    await consumer.pause();
+    logger.info("Consumer paused", { consumerId, socketId: socket.id });
+    if (callback) callback({});
+  } catch (error: any) {
+    logger.error("Error pausing consumer", { consumerId, error: error.message });
+    if (callback) callback({ error: error.message });
+  }
+});
+
+socket.on("resumeConsumer", async ({ consumerId }, callback) => {
+  try {
+    const consumer = socket.data.consumers.get(consumerId);
+    if (!consumer) {
+      if (callback) callback({ error: "Consumer not found" });
+      return;
+    }
+
+    await consumer.resume();
+    logger.info("Consumer resumed", { consumerId, socketId: socket.id });
+    if (callback) callback({});
+  } catch (error: any) {
+    logger.error("Error resuming consumer", { consumerId, error: error.message });
+    if (callback) callback({ error: error.message });
+  }
+});
 
   // --- GET PRODUCER STATS HANDLER ---
   socket.on("getProducerStats", async ({ producerId }:{producerId:string}, callback:Function) => {

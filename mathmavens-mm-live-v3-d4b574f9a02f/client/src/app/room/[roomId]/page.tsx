@@ -41,6 +41,7 @@ import { toast } from "sonner";
 function VideoChat() {
   const {
     localVideo,
+    secondaryVideo,
     remoteStreams,
     isJoining,
     isConnected,
@@ -57,6 +58,7 @@ function VideoChat() {
   } = useStreamStore(
     useShallow((state) => ({
       localVideo: state.localVideo,
+      secondaryVideo:state.secondaryVideo,
       remoteStreams: state.remoteStreams,
       isConnected: state.isConnected,
       isRoomJoined: state.isRoomJoined,
@@ -203,13 +205,13 @@ function VideoChat() {
       <div className="flex flex-col min-h-screen max-h-screen">
         <StudentHeader />
         <div className="flex grow justify-center">
-          <StudentView stream={localVideo!} />
+          <StudentView stream={localVideo!} stream2={secondaryVideo}/>
         </div>
       </div>
     );
   if (userData?.live_role === "Admin" || userData?.live_role === "Teacher")
     return (
-      <div className="flex flex-col min-h-screen">
+      <div className="flex flex-col min-h-screen overflow-x-hidden">
         <AdminHeader />
         <div className="flex grow justify-center">
           <TeacherView streams={remoteStreams} />

@@ -76,27 +76,31 @@ export const createRoomJoinWorker = ({ io }: Dependencies) => {
         );
         await pipeline.exec();
 
-        const producerKeys = await scanRedisKeys("producer:*:peer");
+        const producerKeys = await scanRedisKeys("producer:*:info");
         const producersData = [];
 
-        if (producerKeys.length > 0) {
-          const producerSocketIds = await redis.mget(producerKeys);
+        for (const key of producerKeys) {
+            const producerId = key.split(":")[1];
+            const producerInfo = await redis.hgetall(key); // Get hash data
 
-          for (let i = 0; i < producerKeys.length; i++) {
-            const producerSocketId = producerSocketIds[i];
-            if (!producerSocketId) continue;
-
-            const producerRoom = await redis.get(
-              `peer:${producerSocketId}:room`
-            );
-            if (producerRoom === roomName) {
-              const producerId = producerKeys[i].split(":")[1];
-              const producerPeer = await getPeer(producerSocketId);
-              if (producerPeer) {
-                producersData.push({ producerId, userData: producerPeer });
-              }
+            if (producerInfo && producerInfo.peerSocketId) {
+                const producerRoom = await redis.get(`peer:${producerInfo.peerSocketId}:room`);
+                if (producerRoom === roomName) {
+                    const producerPeer = await getPeer(producerInfo.peerSocketId);
+                    if (producerPeer) {
+                        try {
+                           producersData.push({
+                               producerId,
+                               userData: producerPeer,
+                               appData: JSON.parse(producerInfo.appData || '{}'),
+                               kind: producerInfo.kind || 'unknown' // Add kind
+                           });
+                        } catch (e) {
+                            logger.warn("Error parsing producer appData during join", { producerId, error: e });
+                        }
+                    }
+                }
             }
-          }
         }
 
         const duration = Date.now() - startTime;

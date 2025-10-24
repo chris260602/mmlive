@@ -5,7 +5,7 @@ import { useStreamStore } from "@/providers/stream-store-provider";
 import { Button } from "../ui/button";
 import { useRouter } from "next/navigation";
 import { useShallow } from "zustand/shallow";
-import { PhoneCallIcon, PhoneIcon, RefreshCwIcon } from "lucide-react";
+import { CameraIcon, CameraOffIcon, Loader2, PhoneCallIcon, PhoneIcon, RefreshCwIcon } from "lucide-react";
 import { useUserStore } from "@/providers/user-store-provider";
 import {
   Select,
@@ -28,6 +28,12 @@ export function StudentHeader() {
   const {
     videoDevices,
     selectedDevice,
+secondaryProducerRef, // Is secondary stream active?
+    selectedSecondaryDevice, // Secondary device ID
+    isSecondaryStreaming,
+    handleSecondaryCamera,
+    stopSecondaryCamera,
+    setSelectedSecondaryDevice,
 
     handleCameraChange,
     setIsDeviceLoading,
@@ -41,6 +47,12 @@ export function StudentHeader() {
       setSelectedDevice: state.setSelectedDevice,
       setIsDeviceLoading: state.setIsDeviceLoading,
       setVideoDevices: state.setVideoDevices,
+      secondaryProducerRef: state.secondaryProducerRef,
+      selectedSecondaryDevice: state.selectedSecondaryDevice,
+      isSecondaryStreaming: state.isSecondaryStreaming,
+      handleSecondaryCamera: state.handleSecondaryCamera,
+      stopSecondaryCamera: state.stopSecondaryCamera,
+      setSelectedSecondaryDevice: state.setSelectedSecondaryDevice,
     }))
   );
 
@@ -49,6 +61,31 @@ export function StudentHeader() {
       roomData: state.roomData,
     }))
   );
+
+  const availableSecondaryDevices = videoDevices.filter(
+    (device) => device.deviceId !== selectedDevice
+  );
+
+  const handleSecondaryDeviceChange = (deviceId: string) => {
+    setSelectedSecondaryDevice(deviceId);
+    
+  };
+
+  const toggleSecondaryStream = () => {
+    if (secondaryProducerRef) {
+      stopSecondaryCamera();
+    } else if (selectedSecondaryDevice) {
+        handleSecondaryCamera(selectedSecondaryDevice);
+    } else if (availableSecondaryDevices.length > 0){
+        // If no secondary device is selected yet, but devices are available,
+        // select the first available one and start it.
+        const firstAvailable = availableSecondaryDevices[0].deviceId;
+        setSelectedSecondaryDevice(firstAvailable);
+        handleSecondaryCamera(firstAvailable);
+    } else {
+        toast.info("No additional cameras available to start.");
+    }
+  };
 
   const refreshDevice = async () => {
     // const { setVideoDevices, setIsDeviceLoading } =
@@ -114,6 +151,51 @@ export function StudentHeader() {
           <Button onClick={handleNavigate} size="sm">
             Go to Portal
           </Button>
+
+          {availableSecondaryDevices.length > 0 && (
+             <div className="flex items-center gap-1">
+                 <Select
+                     value={selectedSecondaryDevice || ""}
+                     onValueChange={handleSecondaryDeviceChange}
+                     disabled={isSecondaryStreaming || !!secondaryProducerRef} // Disable select if streaming or starting
+                 >
+                   <SelectTrigger className="w-[180px]" id="secondary-video-device">
+                     <SelectValue placeholder="Select Webcam..." />
+                   </SelectTrigger>
+                   <SelectContent>
+                     {availableSecondaryDevices.map((device) => (
+                       <SelectItem
+                         key={device?.deviceId}
+                         value={device?.deviceId || "h"}
+                       >
+                         {device?.label || `Camera ${device?.deviceId.substring(0, 5)}`}
+                       </SelectItem>
+                     ))}
+                   </SelectContent>
+                 </Select>
+
+               <Tooltip>
+                 <TooltipTrigger asChild>
+                   <Button
+                     variant={secondaryProducerRef ? "destructive" : "outline"}
+                     size="icon"
+                     onClick={toggleSecondaryStream}
+                     disabled={(!secondaryProducerRef && !selectedSecondaryDevice && availableSecondaryDevices.length === 0)}
+                   >
+                     {secondaryProducerRef ? (
+                       <CameraOffIcon className="h-4 w-4" />
+                     ) : (
+                       <CameraIcon className="h-4 w-4" />
+                     )}
+                   </Button>
+                 </TooltipTrigger>
+                 <TooltipContent>
+                    <p>{secondaryProducerRef ? "Stop Webcam" : "Start Webcam"}</p>
+                 </TooltipContent>
+               </Tooltip>
+
+             </div>
+          )}
         </div>
       </div>
     </header>

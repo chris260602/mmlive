@@ -14,20 +14,24 @@ import { UserStore } from "./user-store";
 import { isLocal, isProd } from "@/utils/envUtils";
 export type StreamState = {
   localVideo?: MediaStream;
+  secondaryVideo?: MediaStream;
   isJoining: boolean;
   isConnected: boolean;
   isDeviceLoading: boolean;
   isRoomJoined: boolean;
   selectedDevice: string;
+  selectedSecondaryDevice: string;
   socket: Socket | null; // To hold the WebSocket instance
   videoRef: HTMLVideoElement | null; // To hold a ref to a <video> element
   remoteStreams: REMOTE_STREAM_TYPE[];
   sendTransportRef: Transport<AppData> | null;
   recvTransportRef: Transport<AppData> | null;
   videoProducerRef: Producer<AppData> | null;
+  secondaryProducerRef: Producer<AppData> | null;
   deviceRef?: mediasoupClient.types.Device;
   videoDevices: REMOTE_STREAM_TYPE[];
-
+  isSecondaryStreaming: boolean;
+  cameraViewMode: "primary" | "secondary" | "both";
   // Producer tracking for reconnection
   availableProducers: Map<string, { userData: USER_DATA_TYPE; kind: string }>;
   activeConsumers: Map<
@@ -67,16 +71,20 @@ export type StreamActions = {
   setIsDeviceLoading: (status: boolean) => void;
   setIsRoomJoined: (status: boolean) => void;
   setLocalVideo: (stream: MediaStream) => void;
+  setSecondaryVideo: (stream: MediaStream | undefined) => void;
   setRemoteStreams: (streams: REMOTE_STREAM_TYPE[]) => void;
   removeRemoteStream: (consumerId: string) => void;
   setDeviceRef: (device: mediasoupClient.types.Device) => void;
   setVideoProducerRef: (ref: Producer<AppData>) => void;
+  setSecondaryProducerRef: (ref: Producer<AppData> | null) => void;
   setSendTransportRef: (ref: Transport<AppData>) => void;
   setRecvTransportRef: (ref: Transport<AppData>) => void;
   updateLocalVideo: (newStream: MediaStream) => void;
   addRemoteStream: (remoteStream: REMOTE_STREAM_TYPE) => void;
   setVideoDevices: (devices: REMOTE_STREAM_TYPE[]) => void;
   setSelectedDevice: (device: string) => void;
+  setSelectedSecondaryDevice: (device: string) => void;
+  setIsSecondaryStreaming: (status: boolean) => void;
   handleRefreshStudent: (peerId: string, userId: string) => void;
   handleKickStudent: (peerId: string, userId: string) => void;
   handleJoin: (
@@ -86,8 +94,11 @@ export type StreamActions = {
     live_role: string
   ) => Promise<void>;
   handleCameraChange: () => Promise<void>;
+  handleSecondaryCamera: (deviceId: string) => Promise<void>;
+  stopSecondaryCamera: () => Promise<void>;
   consume: (producerId: string) => Promise<void>;
   handleLeaveRoom: () => void;
+  setCameraViewMode: (mode: "primary" | "secondary" | "both") => void;
 
   // New producer tracking actions
   addAvailableProducer: (
@@ -130,10 +141,14 @@ export type StreamActions = {
   releaseLock: (lockName: string) => void;
   releaseAllLocks: () => void;
   isLocked: (lockName: string) => boolean;
-
+  handleScreenChange: () => void;
   // Connection Status Actions
   updateConnectionStatus: () => void;
-
+  pauseConsumersByType: (cameraType: "primary" | "secondary") => Promise<void>;
+  resumeConsumersByType: (cameraType: "primary" | "secondary") => Promise<void>;
+  manageConsumersForViewMode: (
+    mode: "primary" | "secondary" | "both"
+  ) => Promise<void>;
   _resetConnectionState: (isForRecovery: boolean) => void;
 };
 
@@ -146,14 +161,17 @@ export const initStreamStore = (): StreamState => {
     isDeviceLoading: true,
     isRoomJoined: false,
     selectedDevice: "",
+    selectedSecondaryDevice: "",
     socket: null,
     videoRef: null,
     remoteStreams: [],
     sendTransportRef: null,
     recvTransportRef: null,
     videoProducerRef: null,
+    secondaryProducerRef: null,
     videoDevices: [],
-
+    isSecondaryStreaming: false,
+    cameraViewMode: "both",
     // Producer tracking
     availableProducers: new Map(),
     activeConsumers: new Map(),
@@ -187,14 +205,17 @@ export const defaultInitState: StreamState = {
   isDeviceLoading: true,
   isRoomJoined: false,
   selectedDevice: "",
+  selectedSecondaryDevice: "",
   socket: null,
   videoRef: null,
   remoteStreams: [],
   sendTransportRef: null,
   recvTransportRef: null,
   videoProducerRef: null,
+  secondaryProducerRef: null,
   videoDevices: [],
-
+  isSecondaryStreaming: false,
+  cameraViewMode: "both",
   // Producer tracking
   availableProducers: new Map(),
   activeConsumers: new Map(),
@@ -320,7 +341,7 @@ export const createStreamStore = (
 
               transport.on(
                 "produce",
-                async ({ kind, rtpParameters }, callback, errback) => {
+                async ({ kind, rtpParameters, appData }, callback, errback) => {
                   try {
                     socket!.emit(
                       "produce",
@@ -329,6 +350,7 @@ export const createStreamStore = (
                         kind,
                         rtpParameters,
                         roomName,
+                        appData,
                       },
                       (data) => {
                         if (data.error) errback(new Error(data.error));
@@ -423,13 +445,20 @@ export const createStreamStore = (
       setIsDeviceLoading: (status) => set({ isDeviceLoading: status }),
       setIsRoomJoined: (status) => set({ isRoomJoined: status }),
       setLocalVideo: (stream) => set({ localVideo: stream }),
+      setSecondaryVideo: (stream) => set({ secondaryVideo: stream }),
       setRemoteStreams: (streams) => set({ remoteStreams: streams }),
       setDeviceRef: (device) => set({ deviceRef: device }),
       setVideoProducerRef: (ref) => set({ videoProducerRef: ref }),
+      setSecondaryProducerRef: (ref) => set({ secondaryProducerRef: ref }),
       setSendTransportRef: (ref) => set({ sendTransportRef: ref }),
       setRecvTransportRef: (ref) => set({ recvTransportRef: ref }),
       setVideoDevices: (devices) => set({ videoDevices: devices }),
       setSelectedDevice: (device) => set({ selectedDevice: device }),
+      setSelectedSecondaryDevice: (device) =>
+        set({ selectedSecondaryDevice: device }),
+      setIsSecondaryStreaming: (status) =>
+        set({ isSecondaryStreaming: status }),
+      setCameraViewMode: (mode) => set({ cameraViewMode: mode }),
       _resetConnectionState: (isForRecovery: boolean) => {
         const {
           socket,
@@ -458,8 +487,11 @@ export const createStreamStore = (
           sendTransportRef: null,
           recvTransportRef: null,
           videoProducerRef: null,
+          secondaryProducerRef: null,
+          isSecondaryStreaming: false,
           isRoomJoined: false,
           localVideo: undefined,
+          secondaryVideo: undefined,
           remoteStreams: [],
           availableProducers: new Map(),
           activeConsumers: new Map(),
@@ -668,6 +700,10 @@ export const createStreamStore = (
 
               console.log(params, "consumer");
 
+              const cameraType = (params.appData?.cameraType || "primary") as
+                | "primary"
+                | "secondary";
+
               // Track the active consumer
               addActiveConsumer(producerId, consumer.id, params.userData);
 
@@ -676,6 +712,7 @@ export const createStreamStore = (
                 consumerId: consumer.id,
                 producerId: producerId,
                 userData: params.userData,
+                appData: { cameraType },
               } as REMOTE_STREAM_TYPE);
 
               // Enhanced consumer event handling
@@ -747,7 +784,95 @@ export const createStreamStore = (
           remoteStreams: [...get().remoteStreams, newStream],
         });
       },
+      pauseConsumersByType: async (cameraType: "primary" | "secondary") => {
+        const { socket, remoteStreams } = get();
+        if (!socket) return;
 
+        const streamsToManage = remoteStreams.filter(
+          (stream) => (stream.appData?.cameraType || "primary") === cameraType
+        );
+
+        console.log(
+          `Pausing ${streamsToManage.length} ${cameraType} consumers`
+        );
+
+        for (const stream of streamsToManage) {
+          try {
+            // Pause the video track locally (stops decoding)
+            stream.stream.getVideoTracks().forEach((track) => {
+              track.enabled = false;
+            });
+
+            socket.emit(
+              "pauseConsumer",
+              { consumerId: stream.consumerId },
+              (response) => {
+                if (response?.error) {
+                  console.warn(
+                    `Server pause failed for ${stream.consumerId}:`,
+                    response.error
+                  );
+                }
+              }
+            );
+          } catch (error) {
+            console.error(
+              `Failed to pause consumer ${stream.consumerId}:`,
+              error
+            );
+          }
+        }
+      },
+
+      resumeConsumersByType: async (cameraType: "primary" | "secondary") => {
+        const { socket, remoteStreams } = get();
+        if (!socket) return;
+
+        const streamsToManage = remoteStreams.filter(
+          (stream) => (stream.appData?.cameraType || "primary") === cameraType
+        );
+
+        console.log(
+          `Resuming ${streamsToManage.length} ${cameraType} consumers`
+        );
+
+        for (const stream of streamsToManage) {
+          try {
+            // Resume the video track locally (starts decoding)
+            stream.stream.getVideoTracks().forEach((track) => {
+              track.enabled = true;
+            });
+            socket.emit('resumeConsumer', { consumerId: stream.consumerId });
+          } catch (error) {
+            console.error(
+              `Failed to resume consumer ${stream.consumerId}:`,
+              error
+            );
+          }
+        }
+      },
+
+      manageConsumersForViewMode: async (
+        mode: "primary" | "secondary" | "both"
+      ) => {
+        const { pauseConsumersByType, resumeConsumersByType } = get();
+
+        if (mode === "primary") {
+          // Show only primary, pause secondary
+          await resumeConsumersByType("primary");
+          await pauseConsumersByType("secondary");
+        } else if (mode === "secondary") {
+          // Show only secondary, pause primary
+          await pauseConsumersByType("primary");
+          await resumeConsumersByType("secondary");
+        } else {
+          // Show both, resume all
+          await resumeConsumersByType("primary");
+          await resumeConsumersByType("secondary");
+        }
+
+        console.log(`View mode changed to: ${mode}`);
+      },
       handleJoin: async (
         roomName: string,
         userData: USER_DATA_TYPE,
@@ -763,6 +888,8 @@ export const createStreamStore = (
           releaseLock,
           isLocked,
           cleanupAllStreams,
+          handleSecondaryCamera,
+          selectedSecondaryDevice,
         } = get();
 
         // Use the new centralized lock to prevent concurrent joins.
@@ -821,7 +948,6 @@ export const createStreamStore = (
                 });
 
                 await handleCameraChange();
-
                 get().setIsRoomJoined(true);
                 set({ isReconnecting: false, reconnectAttempts: 0 });
                 toast.success("Room joined!");
@@ -836,6 +962,11 @@ export const createStreamStore = (
                   get().handleRefreshStudent(peerId, userData.id);
                 }
               } finally {
+                if (selectedSecondaryDevice) {
+                  console.log(selectedSecondaryDevice, "secdev");
+                  await handleSecondaryCamera(selectedSecondaryDevice);
+                }
+
                 setIsJoining(false);
                 releaseLock("join");
               }
@@ -862,7 +993,71 @@ export const createStreamStore = (
       handleLeaveRoom: () => {
         get()._resetConnectionState(false);
       },
+      handleScreenChange: async () => {
+        const {
+          selectedDevice,
+          videoProducerRef,
+          sendTransportRef,
+          updateLocalVideo,
+          setVideoProducerRef,
+        } = get();
+        if (!selectedDevice) return;
 
+        try {
+          const stream = await navigator.mediaDevices.getDisplayMedia();
+          const videoTrack = stream.getVideoTracks()[0];
+
+          if (videoProducerRef) {
+            await videoProducerRef.replaceTrack({ track: videoTrack });
+          } else {
+            const newProducer = await sendTransportRef!.produce({
+              track: videoTrack,
+              encodings: [
+                {
+                  rid: "r0",
+                  maxBitrate: 250000,
+                  scaleResolutionDownBy: 4,
+                  maxFramerate: 10,
+                },
+                {
+                  rid: "r1",
+                  maxBitrate: 800000,
+                  scaleResolutionDownBy: 2,
+                  maxFramerate: 10,
+                },
+                {
+                  rid: "r2",
+                  maxBitrate: 2000000,
+                  scaleResolutionDownBy: 1,
+                  maxFramerate: 15,
+                },
+              ],
+              codecOptions: {
+                videoGoogleStartBitrate: 2000,
+                videoGoogleMinBitrate: 1000,
+                videoGoogleMaxBitrate: 2500,
+              },
+            });
+            setVideoProducerRef(newProducer);
+          }
+          updateLocalVideo(stream);
+        } catch (error: any) {
+          console.error("Error switching webcam:", error);
+
+          // More specific error handling
+          if (error.name === "NotFoundError") {
+            toast.error("Camera not found. Please check if it's connected.");
+          } else if (error.name === "NotAllowedError") {
+            toast.error(
+              "Camera access denied. Please allow camera permissions."
+            );
+          } else if (error.name === "NotReadableError") {
+            toast.error("Camera is already in use by another application.");
+          } else {
+            toast.error("Failed to switch camera");
+          }
+        }
+      },
       handleCameraChange: async () => {
         const {
           selectedDevice,
@@ -914,11 +1109,14 @@ export const createStreamStore = (
                 videoGoogleMinBitrate: 1000,
                 videoGoogleMaxBitrate: 2500,
               },
+              appData: {
+                cameraType: "primary",
+              },
             });
             setVideoProducerRef(newProducer);
           }
           updateLocalVideo(stream);
-        } catch (error:any) {
+        } catch (error: any) {
           console.error("Error switching webcam:", error);
 
           // More specific error handling
@@ -935,7 +1133,91 @@ export const createStreamStore = (
           }
         }
       },
+      handleSecondaryCamera: async (deviceId: string) => {
+        const {
+          sendTransportRef,
+          setSecondaryVideo,
+          setSecondaryProducerRef,
+          setIsSecondaryStreaming,
+          setSelectedSecondaryDevice,
+          secondaryVideo,
+          secondaryProducerRef,
+          socket,
+        } = get();
 
+        if (!sendTransportRef) {
+          toast.error("Not connected to room");
+          return;
+        }
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: deviceId },
+              width: { ideal: 1400, max: 1400 },
+              height: { ideal: 800, max: 800 },
+              frameRate: { max: 30 },
+            },
+          });
+
+          const videoTrack = stream.getVideoTracks()[0];
+          const newProducer = await sendTransportRef.produce({
+            track: videoTrack,
+            encodings: [
+              { rid: "r0", maxBitrate: 100000 },
+              { rid: "r1", maxBitrate: 300000 },
+              { rid: "r2", maxBitrate: 900000 },
+            ],
+            appData: { cameraType: "secondary" }, // Add metadata
+          });
+
+          setSecondaryProducerRef(newProducer);
+          setSecondaryVideo(stream);
+          setSelectedSecondaryDevice(deviceId);
+          setIsSecondaryStreaming(true);
+          toast.success("Webcam started!");
+        } catch (error) {
+          console.error("Error starting Webcam:", error);
+          toast.error("Failed to start Webcam");
+          setIsSecondaryStreaming(false);
+          setSelectedSecondaryDevice("");
+          if (secondaryVideo) {
+            secondaryVideo.getTracks().forEach((track) => track.stop());
+            setSecondaryVideo(undefined);
+          }
+          if (secondaryProducerRef) {
+            secondaryProducerRef.close();
+            setSecondaryProducerRef(null);
+            ws.emit("closeProducer", { producerId: secondaryProducerRef.id });
+          }
+        }
+      },
+
+      stopSecondaryCamera: async () => {
+        const {
+          secondaryProducerRef,
+          secondaryVideo,
+          setSecondaryVideo,
+          setSecondaryProducerRef,
+          setIsSecondaryStreaming,
+          setSelectedSecondaryDevice,
+        } = get();
+
+        if (secondaryProducerRef) {
+          secondaryProducerRef.close();
+          setSecondaryProducerRef(null);
+          ws.emit("closeProducer", { producerId: secondaryProducerRef.id });
+        }
+
+        if (secondaryVideo) {
+          secondaryVideo.getTracks().forEach((track) => track.stop());
+          setSecondaryVideo(undefined);
+        }
+
+        setSelectedSecondaryDevice("");
+        setIsSecondaryStreaming(false);
+        toast.success("Webcam stopped");
+      },
       // New reconnection actions
       setIsReconnecting: (status) => set({ isReconnecting: status }),
       setReconnectAttempts: (attempts) => set({ reconnectAttempts: attempts }),
@@ -959,7 +1241,11 @@ export const createStreamStore = (
         set({ connectionQuality: quality });
 
         // Alert on critical quality degradation
-        if (quality === "disconnected" && prevQuality !== "disconnected" && !isLocal()) {
+        if (
+          quality === "disconnected" &&
+          prevQuality !== "disconnected" &&
+          !isLocal()
+        ) {
           Sentry.captureMessage("Connection lost", {
             level: "error",
             tags: { connectionQuality: quality },
@@ -1145,6 +1431,10 @@ export const createStreamStore = (
             if (lastRoomName) {
               await createSendTransport(lastRoomName);
               await get().handleCameraChange();
+              if (get().selectedSecondaryDevice)
+                await get().handleSecondaryCamera(
+                  get().selectedSecondaryDevice
+                );
             }
           } else {
             // receive

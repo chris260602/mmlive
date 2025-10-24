@@ -10,6 +10,7 @@ import { useStreamStore } from "@/providers/stream-store-provider";
 import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/providers/user-store-provider";
 import { StatsDialog } from "../StatsDialog";
+import { CameraViewToggle } from "../CameraViewToggle";
 
 // A helper function to format the time with leading zeros
 const formatTime = (totalSeconds: number): string => {
@@ -78,6 +79,7 @@ const [isStatsOpen,setIsStatsOpen] = useState(false);
         {/* Right Side: Timer */}
         <div className="flex flex-1 items-center justify-end space-x-2">
           <div className="flex flex-1 items-center justify-end space-x-2">
+            <CameraViewToggle />
             <Button variant={"ghost"} onClick={handleGetStats}><InfoIcon/></Button>
             <div className="flex items-center gap-2 p-2 border rounded-md bg-muted">
               <Clock className="h-4 w-4 text-muted-foreground" />

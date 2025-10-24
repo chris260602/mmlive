@@ -1,3 +1,4 @@
+import logger from "./logger";
 import { localRouters } from "./mediasoup";
 import { redis } from "./redis";
 
@@ -21,4 +22,21 @@ export const findPeerByProducerId = async (producerId: string) => {
   const socketId = await redis.get(`producer:${producerId}:peer`);
   if (!socketId) return null;
   return getPeer(socketId);
+};
+
+export const getProducerInfo = async (producerId: string) => {
+    const info = await redis.hgetall(`producer:${producerId}:info`);
+    if (!info || !info.peerSocketId) return null;
+    try {
+        const peerData = await getPeer(info.peerSocketId); // Fetch full peer data
+        return {
+            peerSocketId: info.peerSocketId,
+            appData: JSON.parse(info.appData || '{}'),
+            kind: info.kind,
+            peerUserData: peerData // Include full user data
+        };
+    } catch (e) {
+        logger.error("Error parsing producer appData or fetching peer data", { producerId, error: e });
+        return null;
+    }
 };

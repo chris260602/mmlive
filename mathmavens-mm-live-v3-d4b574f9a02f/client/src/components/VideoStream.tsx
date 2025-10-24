@@ -29,6 +29,8 @@ type VideoStreamType = {
   allStreamIds?: string[];
   currentFullscreenId?: string;
   setFullscreenId?: (id: string | null) => void;
+    cameraType?: 'primary' | 'secondary';
+
 };
 
 const VideoStream = ({
@@ -42,6 +44,7 @@ const VideoStream = ({
   isActuallyFullscreen = false,
   allStreamIds = [],
   currentFullscreenId = "",
+  cameraType = 'primary',
   setFullscreenId = () => {},
 }: VideoStreamType) => {
   const { handleRefreshStudent, handleKickStudent } = useStreamStore(
@@ -317,6 +320,11 @@ const VideoStream = ({
       <div className="absolute bottom-1 left-1 pointer-events-none">
         <p className="font-semibold text-sm text-white bg-black bg-opacity-50 px-2 py-1 rounded">
           {userData?.child_name}
+          {cameraType === 'secondary' && (
+            <span className="ml-2 text-xs bg-blue-500 text-white px-2 py-0.5 rounded">
+              Cam 2
+            </span>
+          )}
         </p>
       </div>
 

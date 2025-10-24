@@ -4,14 +4,27 @@ import { useShallow } from "zustand/shallow";
 import { StatsDialog } from "../StatsDialog";
 import { useState } from "react";
 import { Button } from "../ui/button";
-import { InfoIcon } from "lucide-react";
+import { InfoIcon, UserIcon } from "lucide-react";
+import { Rnd } from "react-rnd";
 
-const StudentView = ({ stream }: { stream: MediaStream }) => {
-  const { connectionQuality, getTransportStats, handleNuke } = useStreamStore(
+const StudentView = ({
+  stream,
+  stream2,
+}: {
+  stream: MediaStream;
+  stream2?: MediaStream;
+}) => {
+  const {
+    connectionQuality,
+    getTransportStats,
+    handleNuke,
+    handleScreenChange,
+  } = useStreamStore(
     useShallow((state) => ({
       connectionQuality: state.connectionQuality,
       getTransportStats: state.getTransportStats,
       handleNuke: state.handleNuke,
+      handleScreenChange: state.handleScreenChange,
     }))
   );
 
@@ -20,14 +33,47 @@ const StudentView = ({ stream }: { stream: MediaStream }) => {
     setIsStatsOpen(true);
   };
 
+  // const handleShareScreen = async() =>{
+  //   await navigator.mediaDevices.getDisplayMedia()
+  // }
+
   return (
     <div className="flex w-full">
       {/* <Button onClick={handleNuke}>Nuke</Button> */}
-
+      {/* <Button onClick={handleScreenChange}>Share screen</Button> */}
       <div
         key={"user"}
         className="w-full h-full top-0 flex justify-center items-center bg-[#121212]"
       >
+        {/* {stream && !stream2 ? <video
+            ref={(videoEl) => {
+              if (videoEl) videoEl.srcObject = stream;
+            }}
+            autoPlay
+            playsInline
+            className={`h-auto aspect-[10/9] w-full object-contain max-h-[calc(100vh-57px)]`}
+          />:
+          <>
+          <video
+            ref={(videoEl) => {
+              if (videoEl) videoEl.srcObject = stream;
+            }}
+            autoPlay
+            playsInline
+            className={`h-auto aspect-[10/9] w-full object-contain max-h-[calc(100vh-57px)]`}
+          />
+          
+          <video
+            ref={(videoEl) => {
+              if (videoEl) videoEl.srcObject = stream2;
+            }}
+            autoPlay
+            playsInline
+            className={`h-auto aspect-[10/9] w-[200px] absolute top-[34px] left-3 object-contain max-h-[calc(100vh-57px)]`}
+          /></>
+          
+          
+          } */}
         {stream && (
           <video
             ref={(videoEl) => {
@@ -37,6 +83,39 @@ const StudentView = ({ stream }: { stream: MediaStream }) => {
             playsInline
             className={`h-auto aspect-[10/9] w-full object-contain max-h-[calc(100vh-57px)]`}
           />
+        )}
+        {stream2 && (
+          <Rnd
+            default={{
+              x: 0,
+              y: 0,
+              width: 144,
+              height: 96,
+            }}
+            minHeight={40}
+            maxHeight={320}
+            lockAspectRatio
+            bounds={"parent"}
+          >
+            <div className="border-2 border-white rounded overflow-hidden shadow-md m-3">
+              <video
+                ref={(videoEl) => {
+                  if (videoEl) videoEl.srcObject = stream2;
+                }}
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            </div>
+          </Rnd>
+          // <video
+          //   ref={(videoEl) => {
+          //     if (videoEl) videoEl.srcObject = stream2;
+          //   }}
+          //   autoPlay
+          //   playsInline
+          //   className={`h-full aspect-[10/9] w-full object-contain max-h-[calc(100vh-57px)]`}
+          // />
         )}
       </div>
 

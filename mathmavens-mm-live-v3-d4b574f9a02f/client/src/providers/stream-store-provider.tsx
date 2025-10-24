@@ -221,7 +221,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
     });
 
     ws.on("refresh-student-client", ({ peerId, userId }) => {
-      const { selectedDevice: currDevice } = storeRef.current!.getState();
+      const { selectedDevice: currDevice,selectedSecondaryDevice } = storeRef.current!.getState();
       const {
         roomId,
         userData,
@@ -232,6 +232,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
         const dataToStore = {
           is_restart: true,
           media: currDevice,
+          secondMedia:selectedSecondaryDevice,
           room: roomId,
           userData: userData,
           peerId: peerId,
@@ -417,7 +418,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
     // Prevent this effect from running again if it's already in progress
     if (isRestarting) return;
 
-    const { setSelectedDevice, handleJoin } = storeRef.current!.getState();
+    const { setSelectedDevice, handleJoin,setSelectedSecondaryDevice } = storeRef.current!.getState();
     const restartRaw = sessionStorage.getItem("student_restart");
 
     if (restartRaw) {
@@ -435,12 +436,17 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
           const runRestart = async () => {
             if (restartConfig.media) {
               setSelectedDevice(restartConfig.media);
-              await handleJoin(
+setSelectedSecondaryDevice(restartConfig.secondMedia)
+      console.log(restartConfig.secondMedia,"secme")
+await handleJoin(
                 restartConfig.room,
                 restartConfig.userData,
                 restartConfig.peerId,
-                "Student"
+                "Student",
+                
               );
+              
+              
             }
           };
 
@@ -512,6 +518,33 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
       window.removeEventListener("offline", handleOffline);
     };
   }, []);
+
+  useEffect(() => {
+  const unsubscribe = storeRef.current!.subscribe(
+    (state, prevState) => {
+      // When room is joined and we have streams, apply the current view mode
+      if (
+        !prevState.isRoomJoined &&
+        state.isRoomJoined &&
+        state.remoteStreams.length > 0
+      ) {
+        console.log("Room joined with streams, applying view mode:", state.cameraViewMode);
+        state.manageConsumersForViewMode(state.cameraViewMode);
+      }
+      
+      // Also apply when new streams arrive
+      if (
+        state.isRoomJoined &&
+        state.remoteStreams.length > prevState.remoteStreams.length
+      ) {
+        console.log("New streams detected, reapplying view mode");
+        state.manageConsumersForViewMode(state.cameraViewMode);
+      }
+    }
+  );
+
+  return () => unsubscribe();
+}, []);
 
   useEffect(() => {
     // if (process.env.NODE_ENV === "development") {

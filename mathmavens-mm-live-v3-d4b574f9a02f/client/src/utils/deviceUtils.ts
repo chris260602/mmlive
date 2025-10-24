@@ -65,4 +65,7 @@ export type REMOTE_STREAM_TYPE = MediaDeviceInfo &{
   quality?: 'excellent' | 'good' | 'poor';
   deviceId?: string;
   label?: string;
+  appData:{
+  cameraType?: 'primary' | 'secondary'
+  }
 }
