@@ -11,6 +11,7 @@ import { useShallow } from "zustand/shallow";
 import { useUserStore } from "@/providers/user-store-provider";
 import { StatsDialog } from "../StatsDialog";
 import { CameraViewToggle } from "../CameraViewToggle";
+import { AudioControls } from "../AudioControls";
 
 // A helper function to format the time with leading zeros
 const formatTime = (totalSeconds: number): string => {
@@ -87,6 +88,7 @@ const [isStatsOpen,setIsStatsOpen] = useState(false);
                 {formatTime(elapsedSeconds)}
               </span>
             </div>
+            <AudioControls />
             <Button onClick={handleLeaveRoom} size="sm" variant={"destructive"}>
               <PhoneIcon /> Leave Call
             </Button>

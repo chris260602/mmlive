@@ -14,6 +14,7 @@ import React, { useEffect, useRef, useState } from "react"; // Import React hook
 import { useStreamStore } from "@/providers/stream-store-provider";
 import { Rnd } from "react-rnd";
 import { USER_DATA_TYPE } from "@/types/user";
+import { RemoteAudioPlayer } from "../RemoteAudioPlayer";
 
 const TeacherView = ({ streams }: { streams: REMOTE_STREAM_TYPE[] }) => {
   const { currUserData } = useUserStore(
@@ -152,6 +153,7 @@ const TeacherView = ({ streams }: { streams: REMOTE_STREAM_TYPE[] }) => {
 
   return (
     <div ref={containerRef} className="w-full h-full">
+      <RemoteAudioPlayer />
       {fullscreenStream ? (
         <div className="relative w-full h-full">
           <VideoStream

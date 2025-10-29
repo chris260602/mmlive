@@ -17,6 +17,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { getAllUserVideoInput } from "@/utils/deviceUtils";
 import { toast } from "sonner";
+import { AudioControls } from "../AudioControls";
 
 export function StudentHeader() {
   const router = useRouter();
@@ -68,7 +69,7 @@ secondaryProducerRef, // Is secondary stream active?
 
   const handleSecondaryDeviceChange = (deviceId: string) => {
     setSelectedSecondaryDevice(deviceId);
-    
+    toggleSecondaryStream()
   };
 
   const toggleSecondaryStream = () => {
@@ -145,6 +146,7 @@ secondaryProducerRef, // Is secondary stream active?
               </TooltipContent>
             </Tooltip>
           </div>
+          <AudioControls />
           <Button onClick={handleLeaveRoom} size="sm" variant={"destructive"}>
             <PhoneIcon /> Leave Call
           </Button>
@@ -159,8 +161,9 @@ secondaryProducerRef, // Is secondary stream active?
                      onValueChange={handleSecondaryDeviceChange}
                      disabled={isSecondaryStreaming || !!secondaryProducerRef} // Disable select if streaming or starting
                  >
-                   <SelectTrigger className="w-[180px]" id="secondary-video-device">
-                     <SelectValue placeholder="Select Webcam..." />
+                   <SelectTrigger id="secondary-video-device" className={`${isSecondaryStreaming || !!secondaryProducerRef ? 'hidden' :''}`}>
+                    <CameraIcon className="h-4 w-4" />
+                     {/* <SelectValue placeholder="Select Webcam..." /> */}
                    </SelectTrigger>
                    <SelectContent>
                      {availableSecondaryDevices.map((device) => (
@@ -177,10 +180,11 @@ secondaryProducerRef, // Is secondary stream active?
                <Tooltip>
                  <TooltipTrigger asChild>
                    <Button
+                   className={`${isSecondaryStreaming || !!secondaryProducerRef ? '' :'hidden'}`}
                      variant={secondaryProducerRef ? "destructive" : "outline"}
                      size="icon"
                      onClick={toggleSecondaryStream}
-                     disabled={(!secondaryProducerRef && !selectedSecondaryDevice && availableSecondaryDevices.length === 0)}
+                     disabled={!selectedSecondaryDevice || (!secondaryProducerRef && !selectedSecondaryDevice && availableSecondaryDevices.length === 0)}
                    >
                      {secondaryProducerRef ? (
                        <CameraOffIcon className="h-4 w-4" />

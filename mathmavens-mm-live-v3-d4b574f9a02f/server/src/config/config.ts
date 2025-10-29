@@ -85,7 +85,7 @@ export const QUEUE_CONFIG = {
     name: "room-join-queue",
     concurrency: 10, // Process 10 joins simultaneously
     limiter: {
-      max: 50, // Max 50 jobs
+      max: 30, // Max 50 jobs
       duration: 1000, // Per second
     },
   },
@@ -93,7 +93,7 @@ export const QUEUE_CONFIG = {
     name: "transport-creation-queue",
     concurrency: 20,
     limiter: {
-      max: 100,
+      max: 60,
       duration: 1000,
     },
   },
@@ -110,8 +110,17 @@ export const CONFIG = {
   cleanup: {
     // 15 * 60 * 1000
     orphanCheckInterval: 15 * 60 * 1000, // 15 minutes
-    transportTimeout: 60000, // 60 seconds
+    transportTimeout: 25000, // 60 seconds
     memoryCleanupInterval: 5 * 60 * 1000,
+    staleProducerThreshold: 5 * 60 * 1000,
+  },
+  timeouts: {
+    jobWait: 20000, // 20s max wait
+    jobProcessing: 18000, // Job must complete in 18s
+    lockDuration: 25000, // Lock timeout
+    transportConnect: 15000, // Reduced for unstable
+    reconnectDelay: 3000, // Start at 3s for unstable
+    maxReconnectDelay: 15000,
   },
   room: {
     maxPeersPerRoom: 100,

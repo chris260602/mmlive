@@ -15,8 +15,10 @@ import {
 } from "@/stores/stream-store";
 import { ws } from "@/ws";
 import {
+  getAllUserAudioInput,
   getAllUserVideoInput,
   requestCameraPermission,
+  requestMicrophonePermission,
 } from "@/utils/deviceUtils";
 import { UserStoreContext } from "./user-store-provider";
 import { toast } from "sonner";
@@ -49,16 +51,22 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
   }
 
   const initApp = async () => {
-    const { setVideoDevices, setIsDeviceLoading } =
+    const { setVideoDevices, setIsDeviceLoading, setAudioDevices } =
       storeRef.current!.getState();
     setIsDeviceLoading(true);
     try {
       await requestCameraPermission();
-      const devices = await getAllUserVideoInput();
-      setVideoDevices(devices);
+      await requestMicrophonePermission();
+      const [videoDevices, audioDevices] = await Promise.all([
+      getAllUserVideoInput(),
+      getAllUserAudioInput(),
+    ]);
+      setVideoDevices(videoDevices);
+      setAudioDevices(audioDevices);
     } catch (err) {
       toast.error("No Device Found");
       setVideoDevices([]);
+      setAudioDevices([]);
     } finally {
       setIsDeviceLoading(false);
     }

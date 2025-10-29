@@ -40,6 +40,14 @@ export type StreamState = {
   >;
   pendingConsumers: Set<string>;
 
+  // Audio
+  localAudio?: MediaStream;
+  audioProducerRef: Producer<AppData> | null;
+  isMicMuted: boolean;
+  audioDevices: MediaDeviceInfo[];
+  selectedAudioDevice: string;
+  remoteAudioStreams: Map<string, MediaStream>;
+
   // Reconnection state
   isReconnecting: boolean;
   reconnectAttempts: number;
@@ -99,6 +107,19 @@ export type StreamActions = {
   consume: (producerId: string) => Promise<void>;
   handleLeaveRoom: () => void;
   setCameraViewMode: (mode: "primary" | "secondary" | "both") => void;
+
+  // Audio actions
+  setLocalAudio: (stream: MediaStream | undefined) => void;
+  setAudioProducerRef: (ref: Producer<AppData> | null) => void;
+  setIsMicMuted: (muted: boolean) => void;
+  setAudioDevices: (devices: MediaDeviceInfo[]) => void;
+  setSelectedAudioDevice: (deviceId: string) => void;
+  handleAudioToggle: () => Promise<void>;
+  handleAudioDeviceChange: () => Promise<void>;
+  startAudioProduction: () => Promise<void>;
+  stopAudioProduction: () => void;
+  addRemoteAudioStream: (consumerId: string, stream: MediaStream) => void;
+  removeRemoteAudioStream: (consumerId: string) => void;
 
   // New producer tracking actions
   addAvailableProducer: (
@@ -172,6 +193,14 @@ export const initStreamStore = (): StreamState => {
     videoDevices: [],
     isSecondaryStreaming: false,
     cameraViewMode: "both",
+
+    // Audio
+    audioProducerRef: null,
+    isMicMuted: true,
+    audioDevices: [],
+    selectedAudioDevice: "",
+    remoteAudioStreams: new Map(),
+
     // Producer tracking
     availableProducers: new Map(),
     activeConsumers: new Map(),
@@ -216,6 +245,14 @@ export const defaultInitState: StreamState = {
   videoDevices: [],
   isSecondaryStreaming: false,
   cameraViewMode: "both",
+
+  // Audio
+  audioProducerRef: null,
+  isMicMuted: true,
+  audioDevices: [],
+  selectedAudioDevice: "",
+  remoteAudioStreams: new Map(),
+
   // Producer tracking
   availableProducers: new Map(),
   activeConsumers: new Map(),
@@ -263,6 +300,14 @@ export const createStreamStore = (
                 "Server returned an error during transport:",
                 response.error
               );
+              if (!isLocal())
+                Sentry.captureException(response.error, {
+                  tags: {
+                    operation: "createWebRtcTransport",
+                    errorType: "connect_error",
+                  },
+                  level: "error",
+                });
               if (response.error === "Not in a room") {
                 toast.error(`Disconnected`);
                 const {
@@ -297,6 +342,14 @@ export const createStreamStore = (
                 // window.location.reload();
               } else {
                 toast.error(`Transport Failed`);
+                if (!isLocal())
+                  Sentry.captureException(response.error, {
+                    tags: {
+                      operation: "createWebRtcTransport",
+                      errorType: "connect_error",
+                    },
+                    level: "error",
+                  });
                 return reject(new Error(response.error));
               }
             }
@@ -476,6 +529,7 @@ export const createStreamStore = (
         // Only tell the server we're leaving on a clean, user-initiated exit.
         if (socket?.connected && !isForRecovery) {
           socket.emit("leaveRoom");
+          if (get().secondaryProducerRef) get().stopSecondaryCamera();
         }
 
         // Safely close all transports and producers
@@ -623,6 +677,7 @@ export const createStreamStore = (
           addRemoteStream,
           addActiveConsumer,
           pendingConsumers,
+          addRemoteAudioStream,
         } = get();
         let shouldProceed = false;
 
@@ -707,13 +762,20 @@ export const createStreamStore = (
               // Track the active consumer
               addActiveConsumer(producerId, consumer.id, params.userData);
 
-              addRemoteStream({
-                stream: newStream,
-                consumerId: consumer.id,
-                producerId: producerId,
-                userData: params.userData,
-                appData: { cameraType },
-              } as REMOTE_STREAM_TYPE);
+              if (params.kind === "audio") {
+                // Add to remote audio streams
+                addRemoteAudioStream(consumer.id, newStream);
+                console.log(`Added remote audio stream: ${consumer.id}`);
+              } else {
+                // Handle video as before
+                addRemoteStream({
+                  stream: newStream,
+                  consumerId: consumer.id,
+                  producerId: producerId,
+                  userData: params.userData,
+                  appData: { cameraType },
+                } as REMOTE_STREAM_TYPE);
+              }
 
               // Enhanced consumer event handling
               consumer.on("transportclose", () => {
@@ -842,7 +904,7 @@ export const createStreamStore = (
             stream.stream.getVideoTracks().forEach((track) => {
               track.enabled = true;
             });
-            socket.emit('resumeConsumer', { consumerId: stream.consumerId });
+            socket.emit("resumeConsumer", { consumerId: stream.consumerId });
           } catch (error) {
             console.error(
               `Failed to resume consumer ${stream.consumerId}:`,
@@ -924,6 +986,14 @@ export const createStreamStore = (
                 toast.error("Failed to join room: " + data.error);
                 setIsJoining(false);
                 releaseLock("join");
+                if (!isLocal())
+                  Sentry.captureException(data.error, {
+                    tags: {
+                      operation: "joinRoom",
+                      errorType: "connect_error",
+                    },
+                    level: "error",
+                  });
                 return;
               }
 
@@ -934,7 +1004,7 @@ export const createStreamStore = (
                   routerRtpCapabilities: data.rtpCapabilities,
                 });
 
-                if (live_role === "Student")
+                if (live_role !== "Admin")
                   await createSendTransport(roomName);
                 await createRecvTransport();
 
@@ -1072,8 +1142,8 @@ export const createStreamStore = (
           const stream = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: selectedDevice },
-              width: { ideal: 1400, max: 1400 },
-              height: { ideal: 800, max: 800 },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
               frameRate: { max: 30 },
             },
           });
@@ -1154,8 +1224,8 @@ export const createStreamStore = (
           const stream = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: deviceId },
-              width: { ideal: 1400, max: 1400 },
-              height: { ideal: 800, max: 800 },
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
               frameRate: { max: 30 },
             },
           });
@@ -1164,10 +1234,30 @@ export const createStreamStore = (
           const newProducer = await sendTransportRef.produce({
             track: videoTrack,
             encodings: [
-              { rid: "r0", maxBitrate: 100000 },
-              { rid: "r1", maxBitrate: 300000 },
-              { rid: "r2", maxBitrate: 900000 },
+              {
+                rid: "r0",
+                maxBitrate: 250000,
+                scaleResolutionDownBy: 4,
+                maxFramerate: 10,
+              },
+              {
+                rid: "r1",
+                maxBitrate: 800000,
+                scaleResolutionDownBy: 2,
+                maxFramerate: 10,
+              },
+              {
+                rid: "r2",
+                maxBitrate: 2000000,
+                scaleResolutionDownBy: 1,
+                maxFramerate: 15,
+              },
             ],
+            codecOptions: {
+              videoGoogleStartBitrate: 2000,
+              videoGoogleMinBitrate: 1000,
+              videoGoogleMaxBitrate: 2500,
+            },
             appData: { cameraType: "secondary" }, // Add metadata
           });
 
@@ -1654,6 +1744,147 @@ export const createStreamStore = (
             "Status check detected disconnected socket. Attempting graceful reconnection."
           );
           handleDisconnection();
+        }
+      },
+      setLocalAudio: (stream) => set({ localAudio: stream }),
+      setAudioProducerRef: (ref) => set({ audioProducerRef: ref }),
+      setIsMicMuted: (muted) => set({ isMicMuted: muted }),
+      setAudioDevices: (devices) => set({ audioDevices: devices }),
+      setSelectedAudioDevice: (deviceId) =>
+        set({ selectedAudioDevice: deviceId }),
+
+      addRemoteAudioStream: (consumerId, stream) => {
+        const { remoteAudioStreams } = get();
+        remoteAudioStreams.set(consumerId, stream);
+        set({ remoteAudioStreams: new Map(remoteAudioStreams) });
+      },
+
+      removeRemoteAudioStream: (consumerId) => {
+        const { remoteAudioStreams } = get();
+        remoteAudioStreams.delete(consumerId);
+        set({ remoteAudioStreams: new Map(remoteAudioStreams) });
+      },
+
+      startAudioProduction: async () => {
+        const {
+          selectedAudioDevice,
+          sendTransportRef,
+          setAudioProducerRef,
+          setLocalAudio,
+          setIsMicMuted,
+        } = get();
+console.log("Video producer before audio:", get().videoProducerRef?.id, get().videoProducerRef?.closed);
+        if (!sendTransportRef) {
+          toast.error("Not connected to room");
+          return;
+        }
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: selectedAudioDevice
+                ? { exact: selectedAudioDevice }
+                : undefined,
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+
+          const audioTrack = stream.getAudioTracks()[0];
+
+          const producer = await sendTransportRef.produce({
+            track: audioTrack,
+            appData: { mediaType: "audio" },
+          });
+console.log("Video producer after audio:", get().videoProducerRef?.id, get().videoProducerRef?.closed);
+          setAudioProducerRef(producer);
+          setLocalAudio(stream);
+          setIsMicMuted(false);
+
+          producer.on("transportclose", () => {
+            console.log("Audio producer transport closed");
+            get().stopAudioProduction();
+          });
+
+          toast.success("Microphone enabled");
+        } catch (error: any) {
+          console.error("Error starting audio:", error);
+          if (error.name === "NotAllowedError") {
+            toast.error("Microphone access denied");
+          } else if (error.name === "NotFoundError") {
+            toast.error("No microphone found");
+          } else {
+            toast.error("Failed to start microphone");
+          }
+        }
+      },
+
+      stopAudioProduction: () => {
+        const {
+          audioProducerRef,
+          localAudio,
+          setAudioProducerRef,
+          setLocalAudio,
+          setIsMicMuted,
+        } = get();
+
+        if (audioProducerRef) {
+          audioProducerRef.close();
+          setAudioProducerRef(null);
+          ws.emit("closeProducer", { producerId: audioProducerRef.id });
+        }
+
+        if (localAudio) {
+          localAudio.getTracks().forEach((track) => track.stop());
+          setLocalAudio(undefined);
+        }
+
+        setIsMicMuted(true);
+        toast.success("Microphone disabled");
+      },
+
+      handleAudioToggle: async () => {
+        const { isMicMuted, audioProducerRef } = get();
+
+        if (isMicMuted || !audioProducerRef) {
+          await get().startAudioProduction();
+        } else {
+          get().stopAudioProduction();
+        }
+      },
+
+      handleAudioDeviceChange: async () => {
+        const {
+          selectedAudioDevice,
+          audioProducerRef,
+          sendTransportRef,
+          setLocalAudio,
+        } = get();
+
+        if (!selectedAudioDevice || !sendTransportRef) return;
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              deviceId: { exact: selectedAudioDevice },
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+          });
+
+          const audioTrack = stream.getAudioTracks()[0];
+
+          if (audioProducerRef) {
+            await audioProducerRef.replaceTrack({ track: audioTrack });
+          }
+
+          setLocalAudio(stream);
+          toast.success("Microphone changed");
+        } catch (error) {
+          console.error("Error changing microphone:", error);
+          toast.error("Failed to change microphone");
         }
       },
     };

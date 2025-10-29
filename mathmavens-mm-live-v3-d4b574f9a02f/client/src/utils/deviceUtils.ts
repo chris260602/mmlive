@@ -24,10 +24,42 @@ export const getUserVideoDevices = async()=>{
     // return userDevices;
 }
 
+export const getUserAudioDevices = async (): Promise<MediaDeviceInfo[]> => {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  console.log(devices,'dev')
+  return devices.filter(device => device.kind === 'audioinput');
+};
+
+export const requestMicrophonePermission = async (): Promise<boolean> => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: true,video:false 
+    });
+    console.log(stream,"strim")
+    stream.getTracks().forEach(track => track.stop());
+    return true;
+  } catch (err) {
+    console.error("Error requesting microphone permission:", err);
+    toast.error("Please give microphone permission");
+    return false;
+  }
+};
+
+export const getAllUserAudioInput = async (): Promise<MediaDeviceInfo[]> => {
+  try {
+    await requestMicrophonePermission();
+    const devices = await getUserAudioDevices();
+    return devices;
+  } catch (error) {
+    console.error("Error fetching audio devices:", error);
+    return [];
+  }
+};
+
 export const requestCameraPermission = async () => {
     try {
         // Request a stream just to trigger the permission prompt.
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         // Immediately stop the tracks to release the camera, as we don't need this stream yet.
         stream.getTracks().forEach(track => track.stop());
         return true; // Indicates permission was granted

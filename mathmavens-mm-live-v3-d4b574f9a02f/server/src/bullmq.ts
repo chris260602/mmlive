@@ -80,11 +80,11 @@ export const roomJoinQueue = new Queue(QUEUE_CONFIG.roomJoin.name, {
       delay: 2000,
     },
     removeOnComplete: {
-      age: 3600,
-      count: 1000,
+      age: 6 * 3600,
+      count: 2,
     },
     removeOnFail: {
-      age: 24 * 3600,
+      age: 2 * 3600,
     },
   },
 });
@@ -99,7 +99,7 @@ export const transportQueue = new Queue(QUEUE_CONFIG.transport.name, {
     },
     removeOnComplete: {
       age: 1800,
-      count: 500,
+      count: 4,
     },
   },
 });

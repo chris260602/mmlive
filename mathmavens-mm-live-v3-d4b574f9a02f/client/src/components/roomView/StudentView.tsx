@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Button } from "../ui/button";
 import { InfoIcon, UserIcon } from "lucide-react";
 import { Rnd } from "react-rnd";
+import { RemoteAudioPlayer } from "../RemoteAudioPlayer";
 
 const StudentView = ({
   stream,
@@ -39,6 +40,7 @@ const StudentView = ({
 
   return (
     <div className="flex w-full">
+      <RemoteAudioPlayer />
       {/* <Button onClick={handleNuke}>Nuke</Button> */}
       {/* <Button onClick={handleScreenChange}>Share screen</Button> */}
       <div

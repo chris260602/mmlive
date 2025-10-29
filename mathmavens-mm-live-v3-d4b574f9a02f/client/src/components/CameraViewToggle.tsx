@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { useStreamStore } from "@/providers/stream-store-provider";
 import { useShallow } from "zustand/shallow";
-import { Monitor, MonitorSmartphone, Smartphone } from "lucide-react";
+import { Monitor, MonitorSmartphone, Smartphone, Webcam } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -48,7 +48,7 @@ export const CameraViewToggle = () => {
             size="sm"
             onClick={() => handleModeChange("secondary")}
           >
-            <Smartphone className="h-4 w-4" />
+            <Webcam className="h-4 w-4" />
           </Button>
         </TooltipTrigger>
         <TooltipContent>
