@@ -5,7 +5,7 @@ import { useStreamStore } from "@/providers/stream-store-provider";
 import { Button } from "../ui/button";
 import { useRouter } from "next/navigation";
 import { useShallow } from "zustand/shallow";
-import { CameraIcon, CameraOffIcon, Loader2, PhoneCallIcon, PhoneIcon, RefreshCwIcon } from "lucide-react";
+import { CameraIcon, CameraOffIcon, Loader2, PhoneIcon, RefreshCwIcon } from "lucide-react";
 import { useUserStore } from "@/providers/user-store-provider";
 import {
   Select,
@@ -32,6 +32,7 @@ export function StudentHeader() {
 secondaryProducerRef, // Is secondary stream active?
     selectedSecondaryDevice, // Secondary device ID
     isSecondaryStreaming,
+    isLoadingSecondaryCamera,
     handleSecondaryCamera,
     stopSecondaryCamera,
     setSelectedSecondaryDevice,
@@ -54,6 +55,7 @@ secondaryProducerRef, // Is secondary stream active?
       handleSecondaryCamera: state.handleSecondaryCamera,
       stopSecondaryCamera: state.stopSecondaryCamera,
       setSelectedSecondaryDevice: state.setSelectedSecondaryDevice,
+      isLoadingSecondaryCamera:state.isLoadingSecondaryCamera
     }))
   );
 
@@ -137,12 +139,12 @@ secondaryProducerRef, // Is secondary stream active?
             </Select>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button variant="outline" size="icon" onClick={refreshDevice}>
+                <Button variant="outline" size="icon" onClick={handleCameraChange}>
                   <RefreshCwIcon className="text-primary" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Refresh Device</p>
+                <p>Refresh Screen</p>
               </TooltipContent>
             </Tooltip>
           </div>
@@ -159,10 +161,10 @@ secondaryProducerRef, // Is secondary stream active?
                  <Select
                      value={selectedSecondaryDevice || ""}
                      onValueChange={handleSecondaryDeviceChange}
-                     disabled={isSecondaryStreaming || !!secondaryProducerRef} // Disable select if streaming or starting
+                     disabled={isSecondaryStreaming || !!secondaryProducerRef || isLoadingSecondaryCamera} // Disable select if streaming or starting
                  >
                    <SelectTrigger id="secondary-video-device" className={`${isSecondaryStreaming || !!secondaryProducerRef ? 'hidden' :''}`}>
-                    <CameraIcon className="h-4 w-4" />
+                    {isLoadingSecondaryCamera ?<Loader2 className="h-4 w-4 animate-spin" /> :<CameraIcon className="h-4 w-4" />}
                      {/* <SelectValue placeholder="Select Webcam..." /> */}
                    </SelectTrigger>
                    <SelectContent>

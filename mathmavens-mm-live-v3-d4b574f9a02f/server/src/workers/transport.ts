@@ -83,21 +83,35 @@ export const createTransportWorker = ({io}:Dependencies) => {
 
         // FIXED: Single timeout with proper cleanup
         let timeoutCleared = false;
-        const transportTimeout = setTimeout(() => {
-          if (!timeoutCleared && socket.data.transports.has(transport.id)) {
-            logger.warn("Transport connection timeout", {
-              transportId: transport.id,
-              socketId: socket.id,
-            });
-            closeAndCleanTransport(socket, transport);
-            socket.emit("transport-timeout", { transportId: transport.id });
-          }
-        }, CONFIG.cleanup.transportTimeout);
+        let transportTimeout: NodeJS.Timeout | null = null;
+        
+        // ✅ DON'T start timeout immediately for send transports
+        // Only start when connection attempt begins (ICE starts)
+        const startTimeoutIfNeeded = () => {
+          if (transportTimeout || timeoutCleared) return;
+          
+          logger.debug("Starting transport connection timeout", {
+            transportId: transport.id,
+            timeoutMs: CONFIG.cleanup.transportTimeout,
+          });
+          
+          transportTimeout = setTimeout(() => {
+            if (!timeoutCleared && socket.data.transports.has(transport.id)) {
+              logger.warn("Transport connection timeout", {
+                transportId: transport.id,
+                socketId: socket.id,
+              });
+              closeAndCleanTransport(socket, transport);
+              socket.emit("transport-timeout", { transportId: transport.id });
+            }
+          }, CONFIG.cleanup.transportTimeout);
+        };
 
-        // Helper to clear timeout once
         const clearTimeoutOnce = () => {
           if (!timeoutCleared) {
-            clearTimeout(transportTimeout);
+            if (transportTimeout) {
+              clearTimeout(transportTimeout);
+            }
             timeoutCleared = true;
             logger.debug("Transport timeout cleared", {
               transportId: transport.id,
@@ -106,6 +120,7 @@ export const createTransportWorker = ({io}:Dependencies) => {
           }
         };
 
+
         // FIXED: Combined single ICE state listener
         transport.on("icestatechange", (iceState: string) => {
           logger.debug("ICE state change", {
@@ -113,6 +128,10 @@ export const createTransportWorker = ({io}:Dependencies) => {
             state: iceState,
             socketId: socket.id,
           });
+          if (iceState === "checking" || iceState === "new") {
+            startTimeoutIfNeeded();
+          }
+
 
           if (iceState === "connected" || iceState === "completed") {
             clearTimeoutOnce();
@@ -141,7 +160,9 @@ export const createTransportWorker = ({io}:Dependencies) => {
             state: dtlsState,
             socketId: socket.id,
           });
-
+if (dtlsState === "connecting") {
+            startTimeoutIfNeeded();
+          }
           if (dtlsState === "connected") {
             clearTimeoutOnce();
           } else if (dtlsState === "closed" || dtlsState === "failed") {

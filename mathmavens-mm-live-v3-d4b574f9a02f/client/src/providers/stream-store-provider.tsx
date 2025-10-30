@@ -55,14 +55,29 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
       storeRef.current!.getState();
     setIsDeviceLoading(true);
     try {
-      await requestCameraPermission();
-      await requestMicrophonePermission();
+      const cameraGranted = await requestCameraPermission();
+    const micGranted = await requestMicrophonePermission();
+    
+    if (!cameraGranted) {
+      console.warn("⚠️ Camera permission not granted");
+      setVideoDevices([]);
+    }
+    
+    if (!micGranted) {
+      console.warn("⚠️ Microphone permission not granted");
+      setAudioDevices([]);
+    }
+    
+    // ✅ Only get devices if permissions granted
+    if (cameraGranted || micGranted) {
       const [videoDevices, audioDevices] = await Promise.all([
-      getAllUserVideoInput(),
-      getAllUserAudioInput(),
-    ]);
+        cameraGranted ? getAllUserVideoInput() : Promise.resolve([]),
+        micGranted ? getAllUserAudioInput() : Promise.resolve([]),
+      ]);
+      
       setVideoDevices(videoDevices);
       setAudioDevices(audioDevices);
+    }
     } catch (err) {
       toast.error("No Device Found");
       setVideoDevices([]);
@@ -166,7 +181,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
 
         // Track the new producer
         addAvailableProducer(producerId, userData, kind || "video");
-        setTimeout(async () => {
+        
           try {
             // This await is still important for handling the result and errors
             // for this specific consume call.
@@ -175,7 +190,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
           } catch (error) {
             console.error("Failed to consume:", error);
           }
-        }, Math.random() * 1000);
+        
       } catch (error) {
         console.error("Failed to consume new producer:", error);
       }
@@ -229,7 +244,8 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
     });
 
     ws.on("refresh-student-client", ({ peerId, userId }) => {
-      const { selectedDevice: currDevice,selectedSecondaryDevice } = storeRef.current!.getState();
+      const { selectedDevice: currDevice, selectedSecondaryDevice } =
+        storeRef.current!.getState();
       const {
         roomId,
         userData,
@@ -240,7 +256,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
         const dataToStore = {
           is_restart: true,
           media: currDevice,
-          secondMedia:selectedSecondaryDevice,
+          secondMedia: selectedSecondaryDevice,
           room: roomId,
           userData: userData,
           peerId: peerId,
@@ -426,7 +442,8 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
     // Prevent this effect from running again if it's already in progress
     if (isRestarting) return;
 
-    const { setSelectedDevice, handleJoin,setSelectedSecondaryDevice } = storeRef.current!.getState();
+    const { setSelectedDevice, handleJoin, setSelectedSecondaryDevice } =
+      storeRef.current!.getState();
     const restartRaw = sessionStorage.getItem("student_restart");
 
     if (restartRaw) {
@@ -444,17 +461,14 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
           const runRestart = async () => {
             if (restartConfig.media) {
               setSelectedDevice(restartConfig.media);
-setSelectedSecondaryDevice(restartConfig.secondMedia)
-      console.log(restartConfig.secondMedia,"secme")
-await handleJoin(
+              setSelectedSecondaryDevice(restartConfig.secondMedia);
+              console.log(restartConfig.secondMedia, "secme");
+              await handleJoin(
                 restartConfig.room,
                 restartConfig.userData,
                 restartConfig.peerId,
-                "Student",
-                
+                "Student"
               );
-              
-              
             }
           };
 
@@ -528,18 +542,20 @@ await handleJoin(
   }, []);
 
   useEffect(() => {
-  const unsubscribe = storeRef.current!.subscribe(
-    (state, prevState) => {
+    const unsubscribe = storeRef.current!.subscribe((state, prevState) => {
       // When room is joined and we have streams, apply the current view mode
       if (
         !prevState.isRoomJoined &&
         state.isRoomJoined &&
         state.remoteStreams.length > 0
       ) {
-        console.log("Room joined with streams, applying view mode:", state.cameraViewMode);
+        console.log(
+          "Room joined with streams, applying view mode:",
+          state.cameraViewMode
+        );
         state.manageConsumersForViewMode(state.cameraViewMode);
       }
-      
+
       // Also apply when new streams arrive
       if (
         state.isRoomJoined &&
@@ -548,11 +564,10 @@ await handleJoin(
         console.log("New streams detected, reapplying view mode");
         state.manageConsumersForViewMode(state.cameraViewMode);
       }
-    }
-  );
+    });
 
-  return () => unsubscribe();
-}, []);
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     // if (process.env.NODE_ENV === "development") {

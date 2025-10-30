@@ -93,7 +93,7 @@ export const createRoomJoinWorker = ({ io }: Dependencies) => {
                                producerId,
                                userData: producerPeer,
                                appData: JSON.parse(producerInfo.appData || '{}'),
-                               kind: producerInfo.kind || 'unknown' // Add kind
+                               kind: producerInfo.kind || 'video' // Add kind
                            });
                         } catch (e) {
                             logger.warn("Error parsing producer appData during join", { producerId, error: e });

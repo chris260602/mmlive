@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { useStreamStore } from "@/providers/stream-store-provider";
 import { useShallow } from "zustand/shallow";
-import { Mic, MicOff } from "lucide-react";
+import { Loader2, Mic, MicOff } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -21,6 +21,7 @@ export const AudioControls = () => {
     handleAudioToggle,
     setSelectedAudioDevice,
     isRoomJoined,
+    isLoadingMic,
   } = useStreamStore(
     useShallow((state) => ({
       isMicMuted: state.isMicMuted,
@@ -29,6 +30,7 @@ export const AudioControls = () => {
       handleAudioToggle: state.handleAudioToggle,
       setSelectedAudioDevice: state.setSelectedAudioDevice,
       isRoomJoined: state.isRoomJoined,
+      isLoadingMic:state.isLoadingMic
     }))
   );
 
@@ -57,9 +59,9 @@ export const AudioControls = () => {
             variant={isMicMuted ? "destructive" : "default"}
             size="icon"
             onClick={handleAudioToggle}
-            disabled={!isRoomJoined || !selectedAudioDevice}
+            disabled={!isRoomJoined || !selectedAudioDevice || isLoadingMic}
           >
-            {isMicMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            {isMicMuted ? isLoadingMic ? <Loader2 className="h-4 w-4 animate-spin"/> :<MicOff className="h-4 w-4" /> :<Mic className="h-4 w-4" />}
           </Button>
         </TooltipTrigger>
         <TooltipContent>

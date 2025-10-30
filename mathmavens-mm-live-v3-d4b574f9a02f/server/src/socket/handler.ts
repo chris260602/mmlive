@@ -303,6 +303,16 @@ export const initializeSocketIO = (io: Server) => {
       "connectTransport",
       async ({ transportId, dtlsParameters }, callback: Function) => {
         try {
+          logger.info("connectTransport called", {
+        transportId,
+        socketId: socket.id,
+        hasTransportsMap: !!socket.data.transports,
+        transportMapType: typeof socket.data.transports,
+        availableTransports: socket.data.transports 
+          ? Array.from(socket.data.transports.keys())
+          : "transports map is undefined",
+        totalTransports: socket.data.transports?.size || 0,
+      });
           const transport = socket.data.transports.get(transportId);
           if (!transport) throw new Error(`Transport not found`);
           logger.debug("Connecting transport", {
@@ -354,19 +364,36 @@ export const initializeSocketIO = (io: Server) => {
             const existingProducers = Array.from(
               socket.data.producers.entries()
             );
-            const duplicateProducer = existingProducers.find(
-              ([id, p]: [string, any]) => {
-                return p.appData?.cameraType === cameraType;
-              }
-            );
+            let duplicateProducer;
+            if (kind === "audio") {
+              // Find existing audio producer
+              duplicateProducer = existingProducers.find(
+                ([id, p]: [string, any]) => {
+                  const pAppData = p.appData || {};
+                  return pAppData.mediaType === "audio" || p.kind === "audio";
+                }
+              );
+            } else {
+              // Find existing video producer with same camera type
+              const cameraType = appData?.cameraType || "primary";
+              duplicateProducer = existingProducers.find(
+                ([id, p]: [string, any]) => {
+                  return (
+                    p.appData?.cameraType === cameraType && p.kind === "video"
+                  );
+                }
+              );
+            }
 
             if (duplicateProducer) {
               const [existingId, existingProducer] = duplicateProducer;
 
               logger.warn("Duplicate producer detected, replacing", {
                 socketId: socket.id,
-                cameraType,
+                kind,
+                // mediaType,
                 oldProducerId: existingId,
+                newRequest: true,
               });
 
               // Close old producer first
@@ -391,44 +418,33 @@ export const initializeSocketIO = (io: Server) => {
               }
             }
 
-            // ✅ Check Redis for orphaned producers from this peer
-            const producerInfoKeys = await scanRedisKeys("producer:*:info");
-            for (const key of producerInfoKeys) {
-              const info = await redis.hgetall(key);
-              if (info.peerSocketId === socket.id) {
-                try {
-                  const storedAppData = JSON.parse(info.appData || "{}");
-                  if (storedAppData.cameraType === cameraType) {
-                    const orphanedId = key.split(":")[1];
-                    logger.warn("Cleaning orphaned producer", {
-                      producerId: orphanedId,
-                      socketId: socket.id,
-                      cameraType,
-                    });
-                    await redis.del(`producer:${orphanedId}:peer`);
-                    await redis.del(`producer:${orphanedId}:info`);
-                  }
-                } catch (e) {
-                  // Skip invalid entries
-                }
-              }
-            }
-
-            // ✅ Create new producer
             const producer = await transport.produce({
               kind,
               rtpParameters,
-              appData,
+              appData: {
+                ...appData,
+                kind, // Ensure kind is in appData
+                socketId: socket.id,
+              },
+            });
+
+            logger.info("✅ Producer created", {
+              producerId: producer.id,
+              kind,
+              socketId: socket.id,
+              // mediaType,
             });
 
             socket.data.producers.set(producer.id, producer);
 
+            // ✅ Store complete producer info in Redis
             const producerInfo = {
               peerSocketId: socket.id,
               appData: JSON.stringify(appData || {}),
               kind: kind,
               createdAt: Date.now().toString(),
             };
+
             await redis.hset(`producer:${producer.id}:info`, producerInfo);
             await redis.expire(
               `producer:${producer.id}:info`,
@@ -442,9 +458,11 @@ export const initializeSocketIO = (io: Server) => {
               CONFIG.redis.keyTTL.producer
             );
 
+            // Set up producer event listeners
             producer.on("transportclose", () => {
               logger.info("Producer transport closed", {
                 producerId: producer.id,
+                kind,
                 socketId: socket.id,
               });
               socket.data.producers.delete(producer.id);
@@ -452,18 +470,27 @@ export const initializeSocketIO = (io: Server) => {
               redis.del(`producer:${producer.id}:info`).catch(console.error);
             });
 
+            // ✅ Notify room about new producer
             const peer = await getPeer(socket.id);
             await publishToRoom(
               roomName,
               "new-producer",
-              { producerId: producer.id, userData: peer, kind, appData },
+              {
+                producerId: producer.id,
+                userData: peer,
+                kind,
+                appData: {
+                  ...appData,
+                  kind,
+                },
+              },
               socket.id
             );
 
-            logger.info("Producer created successfully", {
+            logger.info("Producer broadcast complete", {
               producerId: producer.id,
-              socketId: socket.id,
-              cameraType,
+              kind,
+              roomName,
             });
 
             return { id: producer.id };
@@ -506,15 +533,54 @@ export const initializeSocketIO = (io: Server) => {
         try {
           const { router } = await getRoomFromSocketId(socket.id);
           const transport = socket.data.transports.get(transportId);
-
-          if (!router || !transport) {
-            return callback({ error: "Router or Transport not found" });
+          if (!router) {
+            logger.error("Router not found", {
+              socketId: socket.id,
+              producerId,
+            });
+            return callback({ error: "Router not found" });
           }
 
-          if (!router.canConsume({ producerId, rtpCapabilities })) {
-            logger.warn("Cannot consume", { producerId, socketId: socket.id });
-            return callback({ error: "Cannot consume" });
+          if (!transport) {
+            logger.error("Transport not found", {
+              socketId: socket.id,
+              transportId,
+              producerId,
+              availableTransports: Array.from(socket.data.transports.keys()),
+            });
+            return callback({ error: "Transport not found" });
           }
+
+          if ((transport as any)._closed) {
+            logger.error("Transport is closed", {
+              socketId: socket.id,
+              transportId,
+            });
+            return callback({ error: "Transport is closed" });
+          }
+
+          // ✅ Check if can consume
+          const canConsume = router.canConsume({ producerId, rtpCapabilities });
+
+          if (!canConsume) {
+            logger.warn("Cannot consume producer", {
+              producerId,
+              socketId: socket.id,
+            });
+            return callback({ error: "Cannot consume this producer" });
+          }
+
+          // ✅ Get producer info
+          const producerInfo = await getProducerInfo(producerId);
+          if (!producerInfo) {
+            logger.error("Producer info not found", {
+              producerId,
+              socketId: socket.id,
+            });
+            return callback({ error: "Producer not found" });
+          }
+
+          const producerKind = producerInfo.kind || "video";
 
           // ✅ CRITICAL: Check if already consuming this producer
           const existingConsumer = Array.from(
@@ -546,18 +612,14 @@ export const initializeSocketIO = (io: Server) => {
             });
           }
 
-          const producingPeer = await getProducerInfo(producerId);
-          if (!producingPeer) {
-            return callback({ error: "Producing peer not found" });
-          }
-
           const consumer = await transport.consume({
             producerId,
             rtpCapabilities,
-            paused: true,
+            paused: producerKind === "video", // Start video paused, audio playing
             appData: {
-              ...(producingPeer.appData || {}),
+              ...(producerInfo.appData || {}),
               consumerSocketId: socket.id,
+              producerKind: producerKind,
               createdAt: Date.now(),
             },
           });
@@ -597,8 +659,11 @@ export const initializeSocketIO = (io: Server) => {
               producerId,
               kind: consumer.kind,
               rtpParameters: consumer.rtpParameters,
-              userData: producingPeer.peerUserData,
-              appData: producingPeer.appData,
+              userData: producerInfo.peerUserData,
+              appData: {
+                ...producerInfo.appData,
+                kind: producerKind,
+              },
             },
           });
         } catch (error: any) {
