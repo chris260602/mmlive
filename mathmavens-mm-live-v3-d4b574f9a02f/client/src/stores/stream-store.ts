@@ -58,10 +58,6 @@ export type StreamState = {
 
   // Speaking detection
   mutedStudents: Map<string, boolean>;
-  speakingConsumers: Set<string>;
-  audioAnalyzers: Map<string, AnalyserNode>;
-  localAudioAnalyzer: AnalyserNode | null;
-  isLocalSpeaking: boolean;
 
   // Reconnection state
   isReconnecting: boolean;
@@ -147,17 +143,7 @@ export type StreamActions = {
 
   // Speaking detection actions
   setStudentMuteStatus: (userId: string, isMuted: boolean) => void;
-  setSpeakingConsumer: (consumerId: string, isSpeaking: boolean) => void;
-  setLocalSpeaking: (isSpeaking: boolean) => void;
-  startLocalAudioDetection: (stream: MediaStream) => void;
-  stopLocalAudioDetection: () => void;
-  startRemoteAudioDetection: (socketId: string, stream: MediaStream) => void;
-  stopRemoteAudioDetection: (socketId: string) => void;
-  detectAudioLevel: (
-    analyzer: AnalyserNode,
-    identifier: string,
-    isLocal?: boolean
-  ) => () => void;
+ 
   // New producer tracking actions
   addAvailableProducer: (
     producerId: string,
@@ -244,10 +230,6 @@ export const initStreamStore = (): StreamState => {
 
     // speaking detection
     mutedStudents: new Map<string, boolean>(),
-    speakingConsumers: new Set<string>(),
-    audioAnalyzers: new Map<string, AnalyserNode>(),
-    localAudioAnalyzer: null,
-    isLocalSpeaking: false,
 
     // Producer tracking
     availableProducers: new Map(),
@@ -308,10 +290,6 @@ export const defaultInitState: StreamState = {
 
   // Speaking detection
   mutedStudents: new Map<string, boolean>(),
-  speakingConsumers: new Set<string>(),
-  audioAnalyzers: new Map<string, AnalyserNode>(),
-  localAudioAnalyzer: null,
-  isLocalSpeaking: false,
 
   // Producer tracking
   availableProducers: new Map(),
@@ -690,19 +668,12 @@ export const createStreamStore = (
           stopHeartbeat,
           secondaryVideo,
           localAudio,
-          stopLocalAudioDetection,
-          audioAnalyzers,
         } = get();
         console.log(
           `Resetting connection state. For recovery: ${isForRecovery}`
         );
 
         stopHeartbeat();
-
-        stopLocalAudioDetection();
-        audioAnalyzers.forEach((_, socketId) => {
-          get().stopRemoteAudioDetection(socketId);
-        });
 
         // Only tell the server we're leaving on a clean, user-initiated exit.
         if (socket?.connected && !isForRecovery) {
@@ -735,10 +706,6 @@ export const createStreamStore = (
           availableProducers: new Map(),
           activeConsumers: new Map(),
           pendingConsumers: new Set(),
-          speakingConsumers: new Set<string>(),
-          audioAnalyzers: new Map<string, AnalyserNode>(),
-          localAudioAnalyzer: null,
-          isLocalSpeaking: false,
           mutedStudents: new Map<string, boolean>(),
         };
 
@@ -1239,7 +1206,7 @@ export const createStreamStore = (
                   get().setStudentMuteStatus(p.userData.id, p.userData.isMuted);
                   consume(p.producerId);
                 });
-                if (live_role === "Student") {
+                if (live_role === "Student" || live_role === "Teacher") {
                   try {
                     const { sendTransportRef } = get();
                     if (!sendTransportRef) {
@@ -2144,8 +2111,6 @@ export const createStreamStore = (
           localAudio,
           socket,
           lastUserData,
-          startLocalAudioDetection,
-          stopLocalAudioDetection,
         } = get();
         const { userData } = userStoreApi.getState();
 
@@ -2227,14 +2192,12 @@ export const createStreamStore = (
             });
           }
 
-          startLocalAudioDetection(stream);
 
           // Set up event listeners
           producer.on("transportclose", () => {
             console.log("Audio producer transport closed");
             const { audioProducerRef, localAudio } = get();
 
-            stopLocalAudioDetection();
 
             if (audioProducerRef) {
               setAudioProducerRef(null);
@@ -2278,11 +2241,9 @@ export const createStreamStore = (
           localAudio,
           socket,
           lastUserData,
-          stopLocalAudioDetection,
         } = get();
         const { userData } = userStoreApi.getState();
         console.log("Stopping audio production");
-        stopLocalAudioDetection();
         if (audioProducerRef && !(audioProducerRef as any)._closed) {
           try {
             // Notify server FIRST
@@ -2362,7 +2323,7 @@ export const createStreamStore = (
       },
 
       addRemoteAudioStream: (consumerId: string, stream: MediaStream) => {
-        const { remoteAudioStreams, startRemoteAudioDetection } = get();
+        const { remoteAudioStreams } = get();
 
         console.log("Adding remote audio stream:", {
           consumerId,
@@ -2372,11 +2333,10 @@ export const createStreamStore = (
 
         remoteAudioStreams.set(consumerId, stream);
         set({ remoteAudioStreams: new Map(remoteAudioStreams) });
-        startRemoteAudioDetection(consumerId, stream);
       },
 
       removeRemoteAudioStream: (consumerId: string) => {
-        const { remoteAudioStreams, stopRemoteAudioDetection } = get();
+        const { remoteAudioStreams } = get();
 
         console.log("Removing remote audio stream:", consumerId);
 
@@ -2387,7 +2347,6 @@ export const createStreamStore = (
             console.log("Stopped remote audio track:", track.id);
           });
         }
-        stopRemoteAudioDetection(consumerId);
         remoteAudioStreams.delete(consumerId);
         set({ remoteAudioStreams: new Map(remoteAudioStreams) });
       },
@@ -2444,223 +2403,6 @@ export const createStreamStore = (
 
           transport.on("connectionstatechange", onStateChange);
         });
-      },
-      setSpeakingConsumer: (consumerId: string, isSpeaking: boolean) => {
-        const { speakingConsumers } = get();
-        const newSet = new Set(speakingConsumers);
-
-        if (isSpeaking) {
-          newSet.add(consumerId);
-        } else {
-          newSet.delete(consumerId);
-        }
-
-        set({ speakingConsumers: newSet });
-      },
-
-      setLocalSpeaking: (isSpeaking: boolean) => {
-        set({ isLocalSpeaking: isSpeaking });
-      },
-
-      // 2. Audio level detection function
-      detectAudioLevel: (
-        analyzer: AnalyserNode,
-        identifier: string,
-        isLocal: boolean = false
-      ) => {
-        const dataArray = new Uint8Array(analyzer.frequencyBinCount);
-        let isSpeaking = false;
-        let silenceTimeout: NodeJS.Timeout | null = null;
-
-        // Thresholds
-        const SPEAKING_THRESHOLD = 15; // Volume threshold (0-255)
-        const SILENCE_DELAY = 300; // Ms of silence before marking as not speaking
-
-        const checkAudioLevel = () => {
-          analyzer.getByteFrequencyData(dataArray);
-
-          // Calculate average volume
-          const average =
-            dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
-
-          if (average > SPEAKING_THRESHOLD) {
-            // Clear any pending silence timeout
-            if (silenceTimeout) {
-              clearTimeout(silenceTimeout);
-              silenceTimeout = null;
-            }
-
-            // Mark as speaking if not already
-            if (!isSpeaking) {
-              isSpeaking = true;
-
-              if (isLocal) {
-                get().setLocalSpeaking(true);
-                // Emit to server
-                const { socket } = get();
-                console.log(identifier, "iden");
-                socket?.emit("speaking", {
-                  isSpeaking: true,
-                  consumerId: identifier,
-                });
-              } else {
-                get().setSpeakingConsumer(identifier, true);
-              }
-            }
-          } else if (isSpeaking && !silenceTimeout) {
-            // Start silence timeout
-            silenceTimeout = setTimeout(() => {
-              isSpeaking = false;
-
-              if (isLocal) {
-                get().setLocalSpeaking(false);
-                // Emit to server
-                const { socket } = get();
-                socket?.emit("speaking", { isSpeaking: false });
-              } else {
-                get().setSpeakingConsumer(identifier, false);
-              }
-
-              silenceTimeout = null;
-            }, SILENCE_DELAY);
-          }
-        };
-
-        // Check every 100ms
-        const intervalId = setInterval(checkAudioLevel, 100);
-
-        // Return cleanup function
-        return () => {
-          clearInterval(intervalId);
-          if (silenceTimeout) clearTimeout(silenceTimeout);
-        };
-      },
-
-      // 3. Start local audio detection
-      startLocalAudioDetection: (stream: MediaStream) => {
-        try {
-          const { localAudioAnalyzer, stopLocalAudioDetection } = get();
-
-          // Clean up existing analyzer
-          if (localAudioAnalyzer) {
-            stopLocalAudioDetection();
-          }
-
-          // Create audio context and analyzer
-          const audioContext = new AudioContext();
-          const source = audioContext.createMediaStreamSource(stream);
-          const analyzer = audioContext.createAnalyser();
-
-          analyzer.fftSize = 512;
-          analyzer.smoothingTimeConstant = 0.8;
-
-          source.connect(analyzer);
-
-          // Store analyzer
-          set({ localAudioAnalyzer: analyzer });
-
-          // Start detection (using "local" as identifier)
-          const cleanup = get().detectAudioLevel(analyzer, "local", true);
-
-          // Store cleanup function for later
-          (analyzer as any)._cleanup = cleanup;
-
-          console.log("✅ Local audio detection started");
-        } catch (error) {
-          console.error("Error starting local audio detection:", error);
-        }
-      },
-
-      // 4. Stop local audio detection
-      stopLocalAudioDetection: () => {
-        const { localAudioAnalyzer } = get();
-
-        if (localAudioAnalyzer) {
-          // Call cleanup function
-          if ((localAudioAnalyzer as any)._cleanup) {
-            (localAudioAnalyzer as any)._cleanup();
-          }
-
-          // Close audio context
-          const audioContext = (localAudioAnalyzer as any).context;
-          if (audioContext && audioContext.state !== "closed") {
-            audioContext.close();
-          }
-
-          set({ localAudioAnalyzer: null, isLocalSpeaking: false });
-          console.log("Local audio detection stopped");
-        }
-      },
-
-      // 5. Start remote audio detection (using consumerId)
-      startRemoteAudioDetection: (consumerId: string, stream: MediaStream) => {
-        try {
-          const { audioAnalyzers } = get();
-
-          // Clean up existing analyzer for this consumer
-          get().stopRemoteAudioDetection(consumerId);
-
-          // Create audio context and analyzer
-          const audioContext = new AudioContext();
-          const source = audioContext.createMediaStreamSource(stream);
-          const analyzer = audioContext.createAnalyser();
-
-          analyzer.fftSize = 512;
-          analyzer.smoothingTimeConstant = 0.8;
-
-          source.connect(analyzer);
-
-          // Store analyzer
-          const newAnalyzers = new Map(audioAnalyzers);
-          newAnalyzers.set(consumerId, analyzer);
-          set({ audioAnalyzers: newAnalyzers });
-
-          // Start detection (using consumerId as identifier)
-          const cleanup = get().detectAudioLevel(analyzer, consumerId, false);
-
-          // Store cleanup function
-          (analyzer as any)._cleanup = cleanup;
-
-          console.log(
-            `✅ Remote audio detection started for consumer ${consumerId}`
-          );
-        } catch (error) {
-          console.error(
-            `Error starting remote audio detection for ${consumerId}:`,
-            error
-          );
-        }
-      },
-
-      // 6. Stop remote audio detection
-      stopRemoteAudioDetection: (consumerId: string) => {
-        const { audioAnalyzers } = get();
-        const analyzer = audioAnalyzers.get(consumerId);
-
-        if (analyzer) {
-          // Call cleanup function
-          if ((analyzer as any)._cleanup) {
-            (analyzer as any)._cleanup();
-          }
-
-          // Close audio context
-          const audioContext = (analyzer as any).context;
-          if (audioContext && audioContext.state !== "closed") {
-            audioContext.close();
-          }
-
-          // Remove from map
-          const newAnalyzers = new Map(audioAnalyzers);
-          newAnalyzers.delete(consumerId);
-          set({ audioAnalyzers: newAnalyzers });
-
-          // Remove from speaking set
-          get().setSpeakingConsumer(consumerId, false);
-
-          console.log(
-            `Remote audio detection stopped for consumer ${consumerId}`
-          );
-        }
       },
     };
   });

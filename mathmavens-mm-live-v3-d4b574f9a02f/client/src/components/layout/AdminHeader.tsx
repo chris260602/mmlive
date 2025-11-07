@@ -10,6 +10,7 @@ import { useUserStore } from "@/providers/user-store-provider";
 import { StatsDialog } from "../StatsDialog";
 import { CameraViewToggle } from "../CameraViewToggle";
 import { AudioControls } from "../AudioControls";
+import { StudentSettingsBar } from "../StudentSettingsBar";
 
 // A helper function to format the time with leading zeros
 const formatTime = (totalSeconds: number): string => {
@@ -93,6 +94,8 @@ const [isStatsOpen,setIsStatsOpen] = useState(false);
             <Button onClick={handleNavigate} size="sm">
               Go to Portal
             </Button>
+                      <StudentSettingsBar/>
+            
           </div>
         </div>
       </div>

@@ -377,31 +377,6 @@ export const initializeSocketIO = (io: Server) => {
         }
       }
     );
-    // socket.on("speaking", async ({ isSpeaking, consumerId }) => {
-    //   try {
-    //     const roomData = await getRoomFromSocketId(socket.id);
-    //     logger.debug(roomData.name, {
-    //       name: "names",
-    //     });
-    //     if (!roomData.name) return;
-
-    //     socket.to(roomData.name).emit("studentSpeaking", {
-    //       socketId: consumerId,
-    //       isSpeaking,
-    //     });
-
-    //     logger.debug("Speaking state updated", {
-    //       socketId: consumerId,
-    //       roomName: roomData.name,
-    //       isSpeaking,
-    //     });
-    //   } catch (error: any) {
-    //     logger.error("Error handling speaking event", {
-    //       socketId: socket.id,
-    //       error: error.message,
-    //     });
-    //   }
-    // });
 
     socket.on(
       "produce",

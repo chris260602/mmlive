@@ -121,15 +121,15 @@ function VideoChat() {
         <div className="flex items-center justify-center min-h-screen bg-background p-4">
           <Card className="w-full max-w-2xl">
             <CardHeader>
-              <CardTitle className="text-2xl">Ready to Join?</CardTitle>
-              {userData?.live_role === "Student" && (
+              <CardTitle className="text-2xl">Ready to Join? {userData?.live_role === "Teacher" && "Teacher"}</CardTitle>
+              {(userData?.live_role === "Student" || userData?.live_role === "Teacher") && (
                 <CardDescription>
                   Configure your video device before entering the room.
                 </CardDescription>
               )}
             </CardHeader>
             <CardContent className="space-y-6">
-              {userData?.live_role === "Student" && (
+              {(userData?.live_role === "Student" || userData?.live_role === "Teacher") && (
                 <div className="flex gap-1">
                   <div className="space-y-2">
                     <label
@@ -180,7 +180,7 @@ function VideoChat() {
                   !isConnected ||
                   isRoomJoined ||
                   isJoining ||
-                  (userData?.live_role === "Student" && !selectedDevice)
+                  ((userData?.live_role === "Student" || userData?.live_role === "Teacher") && !selectedDevice)
                 }
                 className="bg-primary font-bold py-2 px-4 rounded-lg transition-colors"
               >

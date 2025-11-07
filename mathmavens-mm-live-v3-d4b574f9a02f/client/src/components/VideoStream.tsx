@@ -51,14 +51,12 @@ const VideoStream = ({
   const {
     handleRefreshStudent,
     handleKickStudent,
-    speakingConsumers,
     remoteAudioStreams,
     mutedStudents,
   } = useStreamStore(
     useShallow((state) => ({
       handleRefreshStudent: state.handleRefreshStudent,
       handleKickStudent: state.handleKickStudent,
-      speakingConsumers: state.speakingConsumers,
       remoteAudioStreams: state.remoteAudioStreams,
       mutedStudents: state.mutedStudents,
     }))
@@ -347,15 +345,15 @@ const VideoStream = ({
 
       <div className="absolute bottom-1 left-1 pointer-events-none">
         <p className="font-semibold text-sm text-white bg-black bg-opacity-50 px-2 py-1 rounded">
-          <div className="flex gap-1 items-center">
-            {userData?.child_name}
+          <span className="flex gap-1 items-center">
+            {userData?.child_name || userData?.name}
 
             {isMuted ? (
               <MicOff className="w-4 h-4 text-red-400" />
             ) : (
               <Mic className="w-4 h-4 text-green-400" />
             )}
-          </div>
+          </span>
 
           {cameraType === "secondary" && (
             <span className="ml-2 text-xs bg-blue-500 text-white px-2 py-0.5 rounded">

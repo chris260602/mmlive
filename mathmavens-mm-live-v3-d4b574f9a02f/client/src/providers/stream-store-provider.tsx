@@ -462,7 +462,7 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
       ws.off("transport-ice-failed");
       ws.off("transport-dtls-failed");
       ws.off("transport-quality-update");
-      ws.off("studentSpeaking");
+      // ws.off("studentSpeaking");
       ws.off("studentMuteStatusChanged");
       //   if (ws) ws.disconnect();
       // Also clean up local media stream
