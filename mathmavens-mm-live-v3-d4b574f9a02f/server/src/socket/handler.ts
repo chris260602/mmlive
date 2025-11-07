@@ -200,7 +200,10 @@ export const initializeSocketIO = (io: Server) => {
 
     socket.on(
       "createWebRtcTransport",
-      async ({ isSender }: { isSender: boolean }, callback: Function) => {
+      async (
+        { isSender, isSecondary }: { isSender: boolean; isSecondary?: boolean },
+        callback: Function
+      ) => {
         try {
           const roomData = await getRoomFromSocketId(socket.id);
           if (!roomData.router) {
@@ -217,6 +220,7 @@ export const initializeSocketIO = (io: Server) => {
             {
               socketId: socket.id,
               isSender,
+              isSecondary,
               routerId: roomData.router.id,
             },
             {
@@ -304,15 +308,15 @@ export const initializeSocketIO = (io: Server) => {
       async ({ transportId, dtlsParameters }, callback: Function) => {
         try {
           logger.info("connectTransport called", {
-        transportId,
-        socketId: socket.id,
-        hasTransportsMap: !!socket.data.transports,
-        transportMapType: typeof socket.data.transports,
-        availableTransports: socket.data.transports 
-          ? Array.from(socket.data.transports.keys())
-          : "transports map is undefined",
-        totalTransports: socket.data.transports?.size || 0,
-      });
+            transportId,
+            socketId: socket.id,
+            hasTransportsMap: !!socket.data.transports,
+            transportMapType: typeof socket.data.transports,
+            availableTransports: socket.data.transports
+              ? Array.from(socket.data.transports.keys())
+              : "transports map is undefined",
+            totalTransports: socket.data.transports?.size || 0,
+          });
           const transport = socket.data.transports.get(transportId);
           if (!transport) throw new Error(`Transport not found`);
           logger.debug("Connecting transport", {
@@ -335,6 +339,69 @@ export const initializeSocketIO = (io: Server) => {
         }
       }
     );
+    socket.on(
+      "muteStatusChanged",
+      async ({ userId, isMuted }: { userId: string; isMuted: boolean }) => {
+        try {
+          const roomName = await redis.get(`peer:${socket.id}:room`);
+
+          if (!roomName) {
+            logger.warn("Mute status change but not in room", {
+              socketId: socket.id,
+              userId,
+            });
+            return;
+          }
+          const stateKey = `peer:${socket.id}:state`;
+          await redis.hset(stateKey, "isMuted", isMuted ? "1" : "0");
+          // Ensure this state key expires just like the other peer keys
+          await redis.expire(stateKey, CONFIG.redis.keyTTL.peer);
+          // Broadcast mute status to all other students in the room
+          socket.to(roomName).emit("studentMuteStatusChanged", {
+            userId,
+            isMuted,
+          });
+
+          logger.debug("Mute status updated", {
+            socketId: socket.id,
+            roomName,
+            userId,
+            isMuted,
+          });
+        } catch (error: any) {
+          logger.error("Error handling mute status change", {
+            socketId: socket.id,
+            userId,
+            error: error.message,
+          });
+        }
+      }
+    );
+    // socket.on("speaking", async ({ isSpeaking, consumerId }) => {
+    //   try {
+    //     const roomData = await getRoomFromSocketId(socket.id);
+    //     logger.debug(roomData.name, {
+    //       name: "names",
+    //     });
+    //     if (!roomData.name) return;
+
+    //     socket.to(roomData.name).emit("studentSpeaking", {
+    //       socketId: consumerId,
+    //       isSpeaking,
+    //     });
+
+    //     logger.debug("Speaking state updated", {
+    //       socketId: consumerId,
+    //       roomName: roomData.name,
+    //       isSpeaking,
+    //     });
+    //   } catch (error: any) {
+    //     logger.error("Error handling speaking event", {
+    //       socketId: socket.id,
+    //       error: error.message,
+    //     });
+    //   }
+    // });
 
     socket.on(
       "produce",
@@ -342,8 +409,12 @@ export const initializeSocketIO = (io: Server) => {
         { kind, rtpParameters, transportId, roomName, appData },
         callback: Function
       ) => {
-        const cameraType = appData?.cameraType || appData?.mediaType;
-        const lockKey = `${socket.id}:${cameraType}`;
+        const mediaType = appData?.mediaType || kind; // 'audio' or 'video'
+        const cameraType = appData?.cameraType || "primary";
+        const lockKey =
+          mediaType === "audio"
+            ? `${socket.id}:audio`
+            : `${socket.id}:video:${cameraType}`;
 
         // ✅ Prevent concurrent producer creation for same camera
         if (producerLocks.has(lockKey)) {
@@ -364,26 +435,19 @@ export const initializeSocketIO = (io: Server) => {
             const existingProducers = Array.from(
               socket.data.producers.entries()
             );
-            let duplicateProducer;
-            if (kind === "audio") {
-              // Find existing audio producer
-              duplicateProducer = existingProducers.find(
-                ([id, p]: [string, any]) => {
-                  const pAppData = p.appData || {};
-                  return pAppData.mediaType === "audio" || p.kind === "audio";
+            const duplicateProducer = existingProducers.find(
+              ([id, p]: [string, any]) => {
+                if (p.kind !== kind) return false; // Different media type
+
+                if (kind === "audio") {
+                  // For audio, only check if it's audio
+                  return p.appData?.mediaType === "audio";
+                } else {
+                  // For video, check camera type
+                  return p.appData?.cameraType === cameraType;
                 }
-              );
-            } else {
-              // Find existing video producer with same camera type
-              const cameraType = appData?.cameraType || "primary";
-              duplicateProducer = existingProducers.find(
-                ([id, p]: [string, any]) => {
-                  return (
-                    p.appData?.cameraType === cameraType && p.kind === "video"
-                  );
-                }
-              );
-            }
+              }
+            );
 
             if (duplicateProducer) {
               const [existingId, existingProducer] = duplicateProducer;
@@ -417,15 +481,49 @@ export const initializeSocketIO = (io: Server) => {
                 });
               }
             }
+            const producerInfoKeys = await scanRedisKeys("producer:*:info");
+            for (const key of producerInfoKeys) {
+              const info = await redis.hgetall(key);
+              if (info.peerSocketId === socket.id) {
+                try {
+                  const storedAppData = JSON.parse(info.appData || "{}");
+                  const storedKind = info.kind || "video";
+
+                  // Match based on kind and type
+                  let shouldClean = false;
+                  if (storedKind === "audio" && kind === "audio") {
+                    shouldClean = true;
+                  } else if (storedKind === "video" && kind === "video") {
+                    shouldClean = storedAppData.cameraType === cameraType;
+                  }
+
+                  if (shouldClean) {
+                    const orphanedId = key.split(":")[1];
+                    logger.warn("Cleaning orphaned producer", {
+                      producerId: orphanedId,
+                      socketId: socket.id,
+                      kind,
+                      cameraType,
+                    });
+                    await redis.del(`producer:${orphanedId}:peer`);
+                    await redis.del(`producer:${orphanedId}:info`);
+                  }
+                } catch (e) {
+                  // Skip invalid entries
+                }
+              }
+            }
+
+            const normalizedAppData = {
+              ...(appData || {}),
+              mediaType: kind === "audio" ? "audio" : "video",
+              ...(kind === "video" && { cameraType: cameraType }),
+            };
 
             const producer = await transport.produce({
               kind,
               rtpParameters,
-              appData: {
-                ...appData,
-                kind, // Ensure kind is in appData
-                socketId: socket.id,
-              },
+              appData: normalizedAppData,
             });
 
             logger.info("✅ Producer created", {
@@ -440,23 +538,24 @@ export const initializeSocketIO = (io: Server) => {
             // ✅ Store complete producer info in Redis
             const producerInfo = {
               peerSocketId: socket.id,
-              appData: JSON.stringify(appData || {}),
+              appData: JSON.stringify(normalizedAppData),
               kind: kind,
               createdAt: Date.now().toString(),
             };
 
-            await redis.hset(`producer:${producer.id}:info`, producerInfo);
-            await redis.expire(
+            const pipeline = redis.pipeline();
+            pipeline.hset(`producer:${producer.id}:info`, producerInfo);
+            pipeline.expire(
               `producer:${producer.id}:info`,
               CONFIG.redis.keyTTL.producer
             );
-
-            await redis.set(
+            pipeline.set(
               `producer:${producer.id}:peer`,
               socket.id,
               "EX",
               CONFIG.redis.keyTTL.producer
             );
+            await pipeline.exec();
 
             // Set up producer event listeners
             producer.on("transportclose", () => {
@@ -472,6 +571,7 @@ export const initializeSocketIO = (io: Server) => {
 
             // ✅ Notify room about new producer
             const peer = await getPeer(socket.id);
+            await new Promise((resolve) => setTimeout(resolve, 50));
             await publishToRoom(
               roomName,
               "new-producer",
@@ -615,7 +715,7 @@ export const initializeSocketIO = (io: Server) => {
           const consumer = await transport.consume({
             producerId,
             rtpCapabilities,
-            paused: producerKind === "video", // Start video paused, audio playing
+            paused: false, // Start video paused, audio playing
             appData: {
               ...(producerInfo.appData || {}),
               consumerSocketId: socket.id,
@@ -632,6 +732,7 @@ export const initializeSocketIO = (io: Server) => {
           });
 
           consumer.on("producerpause", () => {
+            logger.info("kena paus sini");
             socket.emit("consumer-producer-paused", {
               consumerId: consumer.id,
             });
@@ -651,6 +752,8 @@ export const initializeSocketIO = (io: Server) => {
             consumerId: consumer.id,
             producerId,
             socketId: socket.id,
+            paused: consumer.paused, // server-side paused flag
+            producerPaused: consumer.producerPaused,
           });
 
           callback({
@@ -726,7 +829,7 @@ export const initializeSocketIO = (io: Server) => {
             if (callback) callback({ error: "Producer not found" });
             return;
           }
-
+          logger.info("producer pause disini woi");
           await producer.pause();
 
           logger.info("Producer paused", { producerId, socketId: socket.id });
@@ -850,6 +953,7 @@ export const initializeSocketIO = (io: Server) => {
             if (callback) callback({ error: "Consumer not found" });
             return;
           }
+          logger.info("consumer pause disini woi");
 
           await consumer.pause();
           logger.info("Consumer paused", { consumerId, socketId: socket.id });

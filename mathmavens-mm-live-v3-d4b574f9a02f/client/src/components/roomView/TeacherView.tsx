@@ -15,6 +15,7 @@ import { useStreamStore } from "@/providers/stream-store-provider";
 import { Rnd } from "react-rnd";
 import { USER_DATA_TYPE } from "@/types/user";
 import { RemoteAudioPlayer } from "../RemoteAudioPlayer";
+import { StudentListSidebar } from "../StudentListSidebar";
 
 const TeacherView = ({ streams }: { streams: REMOTE_STREAM_TYPE[] }) => {
   const { currUserData } = useUserStore(
@@ -146,14 +147,38 @@ const TeacherView = ({ streams }: { streams: REMOTE_STREAM_TYPE[] }) => {
 
   // --- Prepare data for fullscreen/grid ---
   const streamIds = filteredStreams.map((s) => s.main.consumerId);
+
   const fullscreenStream = filteredStreams.find(
     (s) => s.main.consumerId === fullscreenConsumerId
   );
   const isAdmin = currUserData?.live_role === "Admin";
 
+  const ttt = () =>{
+    filteredStreams.forEach(s=>{
+      if(s.pip){
+        const aa = s.pip.stream.getVideoTracks()[0];
+        console.log(aa,"AA")
+        aa.onended = () => {
+  console.error("Camera stopped sending data (aa ended)");
+  // restartCamera();
+};
+
+aa.onmute = () => {
+  console.log(aa,"AA TERBARU")
+  console.warn("aa muted — possibly no frames");
+};
+
+aa.onunmute = () => {
+  console.info("aa resumed");
+};
+      }
+    })
+  }
+  ttt()
   return (
     <div ref={containerRef} className="w-full h-full">
       <RemoteAudioPlayer />
+      {/* <StudentListSidebar/> */}
       {fullscreenStream ? (
         <div className="relative w-full h-full">
           <VideoStream

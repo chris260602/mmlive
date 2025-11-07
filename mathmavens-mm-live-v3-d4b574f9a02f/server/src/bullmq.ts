@@ -15,6 +15,7 @@ export interface RoomJoinJobData {
 export interface TransportJobData {
   socketId: string;
   isSender: boolean;
+  isSecondary?: boolean;
   routerId: string;
 }
 

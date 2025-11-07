@@ -40,16 +40,14 @@ export const MEDIACODECS_CONFIG: RouterRtpCodecCapability[] = [
 ];
 
 export const WEBRTCTRANSPORT_OPTIONS: WebRtcTransportOptions = {
-  listenIps: [
-    { ip: "0.0.0.0", announcedIp: process.env.MMLIVE_IP || undefined },
+  listenInfos: [
+    { ip: "0.0.0.0", protocol:"udp",announcedIp: process.env.MMLIVE_IP || undefined },
   ],
   enableUdp: true,
   enableTcp: true,
   preferUdp: true,
   initialAvailableOutgoingBitrate: 1000000,
-  minimumAvailableOutgoingBitrate: 600000,
   maxSctpMessageSize: 262144,
-  maxIncomingBitrate: 1500000,
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },

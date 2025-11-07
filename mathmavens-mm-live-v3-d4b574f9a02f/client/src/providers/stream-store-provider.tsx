@@ -18,6 +18,7 @@ import {
   getAllUserAudioInput,
   getAllUserVideoInput,
   requestCameraPermission,
+  requestMediaPermission,
   requestMicrophonePermission,
 } from "@/utils/deviceUtils";
 import { UserStoreContext } from "./user-store-provider";
@@ -51,33 +52,54 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
   }
 
   const initApp = async () => {
-    const { setVideoDevices, setIsDeviceLoading, setAudioDevices } =
-      storeRef.current!.getState();
+    const {
+      setVideoDevices,
+      setIsDeviceLoading,
+      setAudioDevices,
+      setSelectedAudioDevice,
+    } = storeRef.current!.getState();
     setIsDeviceLoading(true);
     try {
-      const cameraGranted = await requestCameraPermission();
-    const micGranted = await requestMicrophonePermission();
-    
-    if (!cameraGranted) {
-      console.warn("⚠️ Camera permission not granted");
-      setVideoDevices([]);
-    }
-    
-    if (!micGranted) {
-      console.warn("⚠️ Microphone permission not granted");
-      setAudioDevices([]);
-    }
-    
-    // ✅ Only get devices if permissions granted
-    if (cameraGranted || micGranted) {
+      const mediaGranted = await requestMediaPermission();
+      // const cameraGranted = await requestCameraPermission();
+      // const micGranted = await requestMicrophonePermission();
+      if (!mediaGranted) {
+        console.warn("⚠️ Media permission not granted");
+      }
+      navigator.mediaDevices.enumerateDevices().then((devices) => {
+        console.table(
+          devices.map((d) => ({
+            label: d.label,
+            kind: d.kind,
+            deviceId: d.deviceId,
+          }))
+        );
+      });
+      // if (!cameraGranted) {
+      //   console.warn("⚠️ Camera permission not granted");
+      //   setVideoDevices([]);
+      // }
+
+      // if (!micGranted) {
+      //   console.warn("⚠️ Microphone permission not granted");
+      //   setAudioDevices([]);
+      // }
+      // const vids = await getAllUserVideoInput();
+      // const soundss = await getAllUserAudioInput();
+      // setVideoDevices(vids);
+      // setAudioDevices(soundss);
+      // ✅ Only get devices if permissions granted
+      // if (cameraGranted || micGranted) {
       const [videoDevices, audioDevices] = await Promise.all([
-        cameraGranted ? getAllUserVideoInput() : Promise.resolve([]),
-        micGranted ? getAllUserAudioInput() : Promise.resolve([]),
+        getAllUserVideoInput(),
+        getAllUserAudioInput(),
       ]);
-      
+
       setVideoDevices(videoDevices);
       setAudioDevices(audioDevices);
-    }
+      if (audioDevices.length > 0)
+        setSelectedAudioDevice(audioDevices[0].deviceId);
+      // }
     } catch (err) {
       toast.error("No Device Found");
       setVideoDevices([]);
@@ -181,16 +203,17 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
 
         // Track the new producer
         addAvailableProducer(producerId, userData, kind || "video");
-        
-          try {
-            // This await is still important for handling the result and errors
-            // for this specific consume call.
-            await consume(producerId);
-            console.log("Consumption successful!");
-          } catch (error) {
-            console.error("Failed to consume:", error);
-          }
-        
+
+        try {
+          // This await is still important for handling the result and errors
+          // for this specific consume call.
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          await consume(producerId);
+          console.log("Consumption successful!");
+        } catch (error) {
+          console.error("Failed to consume:", error);
+        }
       } catch (error) {
         console.error("Failed to consume new producer:", error);
       }
@@ -364,6 +387,42 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
       }
     );
 
+    // ws.on("studentSpeaking", ({ socketId, isSpeaking }) => {
+    //   console.log(`Student ${socketId} speaking: ${isSpeaking}`);
+
+    //   // ✅ Find the consumerId for this socketId
+    //   const { remoteAudioStreams, activeConsumers } =
+    //     storeRef.current!.getState();
+
+    //   // Find consumer that belongs to this producer
+    //   const consumerEntry = Array.from(activeConsumers.entries()).find(
+    //     ([consumerId, consumer]) => {
+    //       // Check if this consumer is consuming from this socket's producer
+    //       // You need to track producer's socketId in consumer metadata
+    //       return consumerId === socketId; // or however you stored it
+    //     }
+    //   );
+
+    //   if (consumerEntry) {
+    //     const [consumerId] = consumerEntry;
+    //     storeRef
+    //       .current!.getState()
+    //       .setSpeakingConsumer(consumerId, isSpeaking);
+    //   }
+    // });
+
+    ws.on(
+      "studentMuteStatusChanged",
+      ({ userId, isMuted }: { userId: string; isMuted: boolean }) => {
+        console.log(
+          `Student ${userId} mute status changed: ${
+            isMuted ? "muted" : "unmuted"
+          }`
+        );
+        storeRef.current!.getState().setStudentMuteStatus(userId, isMuted);
+      }
+    );
+
     const monitorConnection = () => {
       const interval = setInterval(() => {
         const { isConnected } = storeRef.current!.getState();
@@ -403,6 +462,8 @@ export const StreamStoreProvider = ({ children }: StreamStoreProviderProps) => {
       ws.off("transport-ice-failed");
       ws.off("transport-dtls-failed");
       ws.off("transport-quality-update");
+      ws.off("studentSpeaking");
+      ws.off("studentMuteStatusChanged");
       //   if (ws) ws.disconnect();
       // Also clean up local media stream
       if (localVideo) {

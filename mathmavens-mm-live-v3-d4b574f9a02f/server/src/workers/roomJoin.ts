@@ -86,14 +86,22 @@ export const createRoomJoinWorker = ({ io }: Dependencies) => {
             if (producerInfo && producerInfo.peerSocketId) {
                 const producerRoom = await redis.get(`peer:${producerInfo.peerSocketId}:room`);
                 if (producerRoom === roomName) {
-                    const producerPeer = await getPeer(producerInfo.peerSocketId);
+                    const [producerPeer, peerState] = await Promise.all([
+                        getPeer(producerInfo.peerSocketId),
+                        redis.hgetall(`peer:${producerInfo.peerSocketId}:state`) // Get the hash
+                    ]);
                     if (producerPeer) {
                         try {
+
+                          const userDataWithState = {
+                               ...producerPeer,
+                               isMuted: peerState.isMuted === "1" // Default to false if not set
+                           };
                            producersData.push({
                                producerId,
-                               userData: producerPeer,
+                               userData: userDataWithState,
                                appData: JSON.parse(producerInfo.appData || '{}'),
-                               kind: producerInfo.kind || 'video' // Add kind
+                               kind: producerInfo.kind || 'video' // Add kind,
                            });
                         } catch (e) {
                             logger.warn("Error parsing producer appData during join", { producerId, error: e });
@@ -102,7 +110,6 @@ export const createRoomJoinWorker = ({ io }: Dependencies) => {
                 }
             }
         }
-
         const duration = Date.now() - startTime;
         logger.info("Room join job successful", {
           jobId: job.id,

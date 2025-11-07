@@ -1,11 +1,9 @@
-// components/layout/header.tsx
-
 "use client";
 import { useStreamStore } from "@/providers/stream-store-provider";
 import { Button } from "../ui/button";
 import { useRouter } from "next/navigation";
 import { useShallow } from "zustand/shallow";
-import { CameraIcon, CameraOffIcon, Loader2, PhoneIcon, RefreshCwIcon } from "lucide-react";
+import { CameraIcon, CameraOffIcon, Loader2, PhoneIcon, Radio, RefreshCwIcon } from "lucide-react";
 import { useUserStore } from "@/providers/user-store-provider";
 import {
   Select,
@@ -18,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip";
 import { getAllUserVideoInput } from "@/utils/deviceUtils";
 import { toast } from "sonner";
 import { AudioControls } from "../AudioControls";
+import { StudentSettingsBar } from "../StudentSettingsBar";
 
 export function StudentHeader() {
   const router = useRouter();
@@ -122,25 +121,10 @@ secondaryProducerRef, // Is secondary stream active?
 
         <div className="flex flex-1 items-center justify-end space-x-2">
           <div className="flex gap-1">
-            <Select value={selectedDevice} onValueChange={setSelectedDevice}>
-              <SelectTrigger className="w-[280px]" id="video-device">
-                <SelectValue placeholder="Select a video device..." />
-              </SelectTrigger>
-              <SelectContent className="">
-                {videoDevices.map((device) => (
-                  <SelectItem
-                    key={device?.deviceId}
-                    value={device?.deviceId || "h"}
-                  >
-                    {device?.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button variant="outline" size="icon" onClick={handleCameraChange}>
-                  <RefreshCwIcon className="text-primary" />
+                  <Radio className="text-primary" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
@@ -149,12 +133,7 @@ secondaryProducerRef, // Is secondary stream active?
             </Tooltip>
           </div>
           <AudioControls />
-          <Button onClick={handleLeaveRoom} size="sm" variant={"destructive"}>
-            <PhoneIcon /> Leave Call
-          </Button>
-          <Button onClick={handleNavigate} size="sm">
-            Go to Portal
-          </Button>
+          
 
           {availableSecondaryDevices.length > 0 && (
              <div className="flex items-center gap-1">
@@ -202,6 +181,7 @@ secondaryProducerRef, // Is secondary stream active?
 
              </div>
           )}
+          <StudentSettingsBar/>
         </div>
       </div>
     </header>

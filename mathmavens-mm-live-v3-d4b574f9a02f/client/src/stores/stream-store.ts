@@ -1,4 +1,7 @@
-import { REMOTE_STREAM_TYPE } from "@/utils/deviceUtils";
+import {
+  REMOTE_STREAM_TYPE,
+  requestMediaPermission,
+} from "@/utils/deviceUtils";
 import { AppData, Producer, Transport } from "mediasoup-client/types";
 import { Socket } from "socket.io-client";
 import { createStore, StoreApi } from "zustand/vanilla";
@@ -19,6 +22,7 @@ export type StreamState = {
   isConnected: boolean;
   isDeviceLoading: boolean;
   isRoomJoined: boolean;
+  isPrimaryDeviceLoading: boolean;
   selectedDevice: string;
   selectedSecondaryDevice: string;
   socket: Socket | null; // To hold the WebSocket instance
@@ -26,6 +30,7 @@ export type StreamState = {
   remoteStreams: REMOTE_STREAM_TYPE[];
   sendTransportRef: Transport<AppData> | null;
   recvTransportRef: Transport<AppData> | null;
+  secondarySendTransportRef: Transport<AppData> | null;
   videoProducerRef: Producer<AppData> | null;
   secondaryProducerRef: Producer<AppData> | null;
   deviceRef?: mediasoupClient.types.Device;
@@ -47,8 +52,16 @@ export type StreamState = {
   isMicMuted: boolean;
   audioDevices: MediaDeviceInfo[];
   selectedAudioDevice: string;
+  oldAudioDevice: string;
   remoteAudioStreams: Map<string, MediaStream>;
   isLoadingMic: boolean;
+
+  // Speaking detection
+  mutedStudents: Map<string, boolean>;
+  speakingConsumers: Set<string>;
+  audioAnalyzers: Map<string, AnalyserNode>;
+  localAudioAnalyzer: AnalyserNode | null;
+  isLocalSpeaking: boolean;
 
   // Reconnection state
   isReconnecting: boolean;
@@ -80,6 +93,7 @@ export type StreamActions = {
   setIsConnected: (status: boolean) => void;
   setIsDeviceLoading: (status: boolean) => void;
   setIsRoomJoined: (status: boolean) => void;
+  setIsPrimaryDeviceLoading: (status: boolean) => void;
   setLocalVideo: (stream: MediaStream) => void;
   setSecondaryVideo: (stream: MediaStream | undefined) => void;
   setRemoteStreams: (streams: REMOTE_STREAM_TYPE[]) => void;
@@ -89,6 +103,7 @@ export type StreamActions = {
   setSecondaryProducerRef: (ref: Producer<AppData> | null) => void;
   setSendTransportRef: (ref: Transport<AppData>) => void;
   setRecvTransportRef: (ref: Transport<AppData>) => void;
+  setSecondarySendTransportRef: (ref: Transport<AppData> | null) => void;
   updateLocalVideo: (newStream: MediaStream) => void;
   addRemoteStream: (remoteStream: REMOTE_STREAM_TYPE) => void;
   setVideoDevices: (devices: REMOTE_STREAM_TYPE[]) => void;
@@ -117,6 +132,7 @@ export type StreamActions = {
   setIsMicMuted: (muted: boolean) => void;
   setAudioDevices: (devices: MediaDeviceInfo[]) => void;
   setSelectedAudioDevice: (deviceId: string) => void;
+  setOldAudioDevice: (deviceId: string) => void;
   handleAudioToggle: () => Promise<void>;
   handleAudioDeviceChange: () => Promise<void>;
   startAudioProduction: () => Promise<void>;
@@ -129,6 +145,19 @@ export type StreamActions = {
     timeoutMs?: number
   ) => Promise<void>;
 
+  // Speaking detection actions
+  setStudentMuteStatus: (userId: string, isMuted: boolean) => void;
+  setSpeakingConsumer: (consumerId: string, isSpeaking: boolean) => void;
+  setLocalSpeaking: (isSpeaking: boolean) => void;
+  startLocalAudioDetection: (stream: MediaStream) => void;
+  stopLocalAudioDetection: () => void;
+  startRemoteAudioDetection: (socketId: string, stream: MediaStream) => void;
+  stopRemoteAudioDetection: (socketId: string) => void;
+  detectAudioLevel: (
+    analyzer: AnalyserNode,
+    identifier: string,
+    isLocal?: boolean
+  ) => () => void;
   // New producer tracking actions
   addAvailableProducer: (
     producerId: string,
@@ -191,11 +220,13 @@ export const initStreamStore = (): StreamState => {
     isRoomJoined: false,
     selectedDevice: "",
     selectedSecondaryDevice: "",
+    isPrimaryDeviceLoading: false,
     socket: null,
     videoRef: null,
     remoteStreams: [],
     sendTransportRef: null,
     recvTransportRef: null,
+    secondarySendTransportRef: null,
     videoProducerRef: null,
     secondaryProducerRef: null,
     videoDevices: [],
@@ -207,8 +238,17 @@ export const initStreamStore = (): StreamState => {
     isMicMuted: true,
     audioDevices: [],
     selectedAudioDevice: "",
+    oldAudioDevice: "",
     remoteAudioStreams: new Map(),
     isLoadingMic: false,
+
+    // speaking detection
+    mutedStudents: new Map<string, boolean>(),
+    speakingConsumers: new Set<string>(),
+    audioAnalyzers: new Map<string, AnalyserNode>(),
+    localAudioAnalyzer: null,
+    isLocalSpeaking: false,
+
     // Producer tracking
     availableProducers: new Map(),
     activeConsumers: new Map(),
@@ -240,6 +280,7 @@ export const defaultInitState: StreamState = {
   isJoining: false,
   isConnected: true,
   isDeviceLoading: true,
+  isPrimaryDeviceLoading: false,
   isRoomJoined: false,
   selectedDevice: "",
   selectedSecondaryDevice: "",
@@ -248,6 +289,7 @@ export const defaultInitState: StreamState = {
   remoteStreams: [],
   sendTransportRef: null,
   recvTransportRef: null,
+  secondarySendTransportRef: null,
   videoProducerRef: null,
   secondaryProducerRef: null,
   videoDevices: [],
@@ -260,8 +302,17 @@ export const defaultInitState: StreamState = {
   isMicMuted: true,
   audioDevices: [],
   selectedAudioDevice: "",
+  oldAudioDevice: "",
   remoteAudioStreams: new Map(),
   isLoadingMic: false,
+
+  // Speaking detection
+  mutedStudents: new Map<string, boolean>(),
+  speakingConsumers: new Set<string>(),
+  audioAnalyzers: new Map<string, AnalyserNode>(),
+  localAudioAnalyzer: null,
+  isLocalSpeaking: false,
+
   // Producer tracking
   availableProducers: new Map(),
   activeConsumers: new Map(),
@@ -500,6 +551,105 @@ export const createStreamStore = (
         );
       });
     };
+    const createSecondaryTransport = async () => {
+      const { socket, deviceRef, setSecondarySendTransportRef } = get();
+      const { roomId } = userStoreApi.getState(); // Get room from user store
+
+      if (!socket || !deviceRef) {
+        toast.error(
+          "Cannot create secondary transport: socket or device not available"
+        );
+        return null;
+      }
+
+      return new Promise((resolve, reject) => {
+        console.info("Creating secondary send transport", {
+          socketId: socket.id,
+        });
+
+        socket.emit(
+          "createWebRtcTransport",
+          { isSender: true, isSecondary: true },
+          (response: any) => {
+            if (response.error) {
+              toast.error("Failed to create secondary transport", {
+                error: response.error,
+              });
+              reject(new Error(response.error));
+              return;
+            }
+
+            try {
+              const { params } = response;
+              const transport = deviceRef.createSendTransport(params);
+
+              transport.on("connectionstatechange", (state) => {
+                console.debug("Secondary transport connection state:", {
+                  state,
+                });
+
+                if (
+                  state === "failed" ||
+                  state === "disconnected" ||
+                  state === "closed"
+                ) {
+                  console.warn("Secondary transport failed", { state });
+                  toast.warning("Secondary camera connection issue");
+                }
+              });
+
+              transport.on(
+                "connect",
+                async ({ dtlsParameters }, callback, errback) => {
+                  socket.emit(
+                    "connectTransport",
+                    { transportId: transport.id, dtlsParameters },
+                    (data: any) => {
+                      if (data.error) errback(new Error(data.error));
+                      else callback();
+                    }
+                  );
+                }
+              );
+
+              transport.on(
+                "produce",
+                async ({ kind, rtpParameters, appData }, callback, errback) => {
+                  try {
+                    socket.emit(
+                      "produce",
+                      {
+                        transportId: transport.id,
+                        kind,
+                        rtpParameters,
+                        roomName: roomId, // Use roomId from user store
+                        appData,
+                      },
+                      (data: any) => {
+                        if (data.error) errback(new Error(data.error));
+                        else callback({ id: data.id });
+                      }
+                    );
+                  } catch (error) {
+                    errback(error);
+                  }
+                }
+              );
+
+              setSecondarySendTransportRef(transport);
+              console.info("Secondary transport created", {
+                transportId: transport.id,
+              });
+
+              resolve(transport);
+            } catch (error) {
+              toast.error("Error creating secondary transport", { error });
+              reject(error);
+            }
+          }
+        );
+      });
+    };
     return {
       ...initState,
       setSocket: (socketInstance) => set({ socket: socketInstance }),
@@ -508,6 +658,8 @@ export const createStreamStore = (
       setIsConnected: (status) => set({ isConnected: status }),
       setIsDeviceLoading: (status) => set({ isDeviceLoading: status }),
       setIsRoomJoined: (status) => set({ isRoomJoined: status }),
+      setIsPrimaryDeviceLoading: (status) =>
+        set({ isPrimaryDeviceLoading: status }),
       setLocalVideo: (stream) => set({ localVideo: stream }),
       setSecondaryVideo: (stream) => set({ secondaryVideo: stream }),
       setRemoteStreams: (streams) => set({ remoteStreams: streams }),
@@ -516,6 +668,8 @@ export const createStreamStore = (
       setSecondaryProducerRef: (ref) => set({ secondaryProducerRef: ref }),
       setSendTransportRef: (ref) => set({ sendTransportRef: ref }),
       setRecvTransportRef: (ref) => set({ recvTransportRef: ref }),
+      setSecondarySendTransportRef: (ref) =>
+        set({ secondarySendTransportRef: ref }),
       setVideoDevices: (devices) => set({ videoDevices: devices }),
       setSelectedDevice: (device) => set({ selectedDevice: device }),
       setSelectedSecondaryDevice: (device) =>
@@ -531,16 +685,24 @@ export const createStreamStore = (
           socket,
           sendTransportRef,
           recvTransportRef,
+          secondarySendTransportRef,
           localVideo,
           stopHeartbeat,
           secondaryVideo,
           localAudio,
+          stopLocalAudioDetection,
+          audioAnalyzers,
         } = get();
         console.log(
           `Resetting connection state. For recovery: ${isForRecovery}`
         );
 
         stopHeartbeat();
+
+        stopLocalAudioDetection();
+        audioAnalyzers.forEach((_, socketId) => {
+          get().stopRemoteAudioDetection(socketId);
+        });
 
         // Only tell the server we're leaving on a clean, user-initiated exit.
         if (socket?.connected && !isForRecovery) {
@@ -551,6 +713,7 @@ export const createStreamStore = (
         // Safely close all transports and producers
         if (sendTransportRef) sendTransportRef.close();
         if (recvTransportRef) recvTransportRef.close();
+        if (secondarySendTransportRef) secondarySendTransportRef.close();
         if (localVideo) localVideo.getTracks().forEach((track) => track.stop());
         if (secondaryVideo)
           secondaryVideo.getTracks().forEach((track) => track.stop());
@@ -559,16 +722,24 @@ export const createStreamStore = (
         const baseReset = {
           sendTransportRef: null,
           recvTransportRef: null,
+          secondarySendTransportRef: null,
           videoProducerRef: null,
           secondaryProducerRef: null,
           isSecondaryStreaming: false,
           isRoomJoined: false,
           localVideo: undefined,
+          audioProducerRef: null,
           secondaryVideo: undefined,
+          localAudio: undefined,
           remoteStreams: [],
           availableProducers: new Map(),
           activeConsumers: new Map(),
           pendingConsumers: new Set(),
+          speakingConsumers: new Set<string>(),
+          audioAnalyzers: new Map<string, AnalyserNode>(),
+          localAudioAnalyzer: null,
+          isLocalSpeaking: false,
+          mutedStudents: new Map<string, boolean>(),
         };
 
         if (isForRecovery) {
@@ -793,6 +964,7 @@ export const createStreamStore = (
               if (params.kind === "audio") {
                 // Add to remote audio streams
                 addRemoteAudioStream(consumer.id, newStream);
+
                 console.log(`Added remote audio stream: ${consumer.id}`);
               } else {
                 // Handle video as before
@@ -845,9 +1017,14 @@ export const createStreamStore = (
         const oldStream = get().localVideo;
 
         // 2. Stop all tracks on the previous stream to release the camera
-        if (oldStream) {
+        if (oldStream && oldStream !== newStream) {
           console.log("Stopping old video tracks.");
-          oldStream.getTracks().forEach((track) => track.stop());
+          oldStream.getTracks().forEach((track) => {
+            // Only stop tracks that are still live
+            if (track.readyState === "live") {
+              track.stop();
+            }
+          });
         }
 
         // 3. Set the new stream in the state
@@ -885,7 +1062,6 @@ export const createStreamStore = (
       pauseConsumersByType: async (cameraType: "primary" | "secondary") => {
         const { socket, remoteStreams } = get();
         if (!socket) return;
-
         const streamsToManage = remoteStreams.filter(
           (stream) => (stream.appData?.cameraType || "primary") === cameraType
         );
@@ -1059,6 +1235,8 @@ export const createStreamStore = (
                     p.userData,
                     p.kind || "video"
                   );
+
+                  get().setStudentMuteStatus(p.userData.id, p.userData.isMuted);
                   consume(p.producerId);
                 });
                 if (live_role === "Student") {
@@ -1072,7 +1250,7 @@ export const createStreamStore = (
                       throw new Error("Send transport is closed");
                     }
                     await waitForTransportConnection(sendTransportRef);
-                    // await new Promise((resolve) => setTimeout(resolve, 500));
+                    await new Promise((resolve) => setTimeout(resolve, 500));
 
                     await handleCameraChange();
                     console.log("✅ Camera started successfully");
@@ -1200,48 +1378,71 @@ export const createStreamStore = (
           sendTransportRef,
           updateLocalVideo,
           setVideoProducerRef,
+          setIsPrimaryDeviceLoading,
           localVideo,
         } = get();
         if (!selectedDevice) return;
+        setIsPrimaryDeviceLoading(true);
         let stream: MediaStream | null = null;
-
         try {
-          stream = await navigator.mediaDevices
-            .getUserMedia({
+          // stream = await navigator.mediaDevices.getUserMedia({
+          //   video: {
+          //     deviceId: { exact: selectedDevice },
+          //     width: { ideal: 1280 },
+          //     height: { ideal: 720 },
+          //     frameRate: { max: 30 },
+          //   },
+          //   audio: false,
+          // });
+          // const videoTrack = stream.getVideoTracks()[0];
+
+          // Option 2: Retry with a loop and max attempts
+          const maxRetries = 3;
+          let attempts = 0;
+          let videoTrack: MediaStreamTrack;
+          while (attempts < maxRetries) {
+            stream = await navigator.mediaDevices.getUserMedia({
               video: {
-                deviceId: selectedDevice,
+                deviceId: { exact: selectedDevice },
                 width: { ideal: 1280 },
                 height: { ideal: 720 },
                 frameRate: { max: 30 },
               },
-            })
-            .catch(async (error) => {
-              console.error(
-                "Failed with exact deviceId, trying without constraints:",
-                error
-              );
-
-              // ✅ Fallback: Try without exact constraint
-              return navigator.mediaDevices.getUserMedia({
-                video: {
-                  deviceId: selectedDevice, // Not exact
-                  width: { ideal: 1280 },
-                  height: { ideal: 720 },
-                  frameRate: { max: 30 },
-                },
-              });
+              audio: false,
             });
-          const videoTrack = stream.getVideoTracks()[0];
 
+            videoTrack = stream.getVideoTracks()[0];
+
+            if (videoTrack.readyState === "live") {
+              break; // Success!
+            }
+
+            // Track ended, clean up and retry
+            console.log(
+              `Attempt ${attempts + 1}: Video track ended, retrying...`
+            );
+            stream.getTracks().forEach((track) => track.stop());
+            attempts++;
+
+            if (attempts >= maxRetries) {
+              throw new Error(
+                "Failed to get active video track after multiple attempts"
+              );
+            }
+
+            // Optional: small delay between retries
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          }
           if (!sendTransportRef || (sendTransportRef as any)._closed) {
             throw new Error("Send transport not available");
           }
 
           console.log("Transport state:", sendTransportRef.connectionState);
+          console.log(videoTrack, "vid track");
 
           if (videoProducerRef) {
             await videoProducerRef.replaceTrack({ track: videoTrack });
-            updateLocalVideo(stream);
+            // updateLocalVideo(stream);
           } else {
             const newProducer = await sendTransportRef!.produce({
               track: videoTrack,
@@ -1277,9 +1478,9 @@ export const createStreamStore = (
             setVideoProducerRef(newProducer);
 
             // ✅ Update local video AFTER successful produce
-            updateLocalVideo(stream);
+            // updateLocalVideo(stream);
           }
-          // updateLocalVideo(stream);
+          updateLocalVideo(stream);
         } catch (error: any) {
           console.error("Error switching webcam:", error);
           if (stream) {
@@ -1297,88 +1498,149 @@ export const createStreamStore = (
           } else {
             toast.error("Failed to switch camera");
           }
+        } finally {
+          setIsPrimaryDeviceLoading(false);
         }
       },
       handleSecondaryCamera: async (deviceId: string) => {
         const {
-          sendTransportRef,
+          secondarySendTransportRef,
           setSecondaryVideo,
           setSecondaryProducerRef,
           setIsSecondaryStreaming,
           setSelectedSecondaryDevice,
           secondaryVideo,
           secondaryProducerRef,
-          setIsLoadingSecondaryCamera,
-          socket,
+          selectedDevice,
         } = get();
 
-        if (!sendTransportRef) {
-          toast.error("Not connected to room");
+        // Prevent using same device
+        if (deviceId === selectedDevice) {
+          toast.error("Cannot use same device for both cameras");
           return;
         }
-        setIsLoadingSecondaryCamera(true);
+
+        const oldSecondaryVideo = secondaryVideo;
+        const oldSecondaryProducer = secondaryProducerRef;
+
+        let newStream: MediaStream | null = null;
+        let newProducer: any = null;
+        let transport: Transport<AppData> = secondarySendTransportRef;
+
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
+          // CRITICAL: Create secondary transport if it doesn't exist
+          if (!transport) {
+            console.info("Secondary transport doesn't exist, creating...");
+            transport = await createSecondaryTransport();
+
+            if (!transport) {
+              throw new Error("Failed to create secondary transport");
+            }
+          }
+
+          // Get the camera stream
+          newStream = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: { exact: deviceId },
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
-              frameRate: { max: 30 },
+              width: { ideal: 640 }, // Lower res for secondary
+              height: { ideal: 480 },
+              frameRate: { max: 15 },
             },
+            audio: false,
           });
 
-          const videoTrack = stream.getVideoTracks()[0];
-          const newProducer = await sendTransportRef.produce({
+          const videoTrack = newStream.getVideoTracks()[0];
+
+          console.log("🎥 Secondary camera track state:", {
+            readyState: videoTrack.readyState,
+            muted: videoTrack.muted,
+            enabled: videoTrack.enabled,
+            label: videoTrack.label,
+          });
+
+          if (videoTrack.readyState === "ended") {
+            throw new Error("Video track ended prematurely");
+          }
+
+          // Produce on SECONDARY transport
+          newProducer = await transport.produce({
             track: videoTrack,
             encodings: [
               {
-                rid: "r0",
-                maxBitrate: 250000,
-                scaleResolutionDownBy: 4,
-                maxFramerate: 10,
-              },
-              {
-                rid: "r1",
-                maxBitrate: 800000,
-                scaleResolutionDownBy: 2,
-                maxFramerate: 10,
-              },
-              {
-                rid: "r2",
-                maxBitrate: 2000000,
-                scaleResolutionDownBy: 1,
+                maxBitrate: 500000,
                 maxFramerate: 15,
               },
             ],
             codecOptions: {
-              videoGoogleStartBitrate: 2000,
-              videoGoogleMinBitrate: 1000,
-              videoGoogleMaxBitrate: 2500,
+              videoGoogleStartBitrate: 500,
+              videoGoogleMinBitrate: 200,
+              videoGoogleMaxBitrate: 1000,
             },
-            appData: { cameraType: "secondary", mediaType: "video" }, // Add metadata
+            appData: {
+              cameraType: "secondary",
+              mediaType: "video",
+              transportType: "secondary", // Mark which transport this uses
+            },
           });
 
+          console.log(
+            "✅ Secondary producer created on secondary transport:",
+            newProducer.id
+          );
+
           setSecondaryProducerRef(newProducer);
-          setSecondaryVideo(stream);
+          setSecondaryVideo(newStream);
           setSelectedSecondaryDevice(deviceId);
           setIsSecondaryStreaming(true);
-          setIsLoadingSecondaryCamera(false);
-          toast.success("Webcam started!");
-        } catch (error) {
-          console.error("Error starting Webcam:", error);
-          setIsLoadingSecondaryCamera(false);
-          toast.error("Failed to start Webcam");
+
+          // Cleanup old resources
+          if (oldSecondaryProducer) {
+            try {
+              oldSecondaryProducer.close();
+              ws.emit("closeProducer", { producerId: oldSecondaryProducer.id });
+            } catch (e) {
+              console.warn("Error closing old producer:", e);
+            }
+          }
+
+          if (oldSecondaryVideo) {
+            try {
+              oldSecondaryVideo.getTracks().forEach((track) => {
+                if (track.readyState === "live") {
+                  track.stop();
+                }
+              });
+            } catch (e) {
+              console.warn("Error stopping old tracks:", e);
+            }
+          }
+
+          toast.success("Webcam started");
+        } catch (error: any) {
+          console.error("❌ Error starting secondary camera:", error);
+
+          if (newStream) {
+            newStream.getTracks().forEach((track) => track.stop());
+          }
+
+          if (newProducer) {
+            try {
+              newProducer.close();
+              ws.emit("closeProducer", { producerId: newProducer.id });
+            } catch (e) {
+              console.warn("Error closing failed producer:", e);
+            }
+          }
+
           setIsSecondaryStreaming(false);
           setSelectedSecondaryDevice("");
-          if (secondaryVideo) {
-            secondaryVideo.getTracks().forEach((track) => track.stop());
+
+          if (!oldSecondaryProducer && !oldSecondaryVideo) {
+            setSecondaryProducerRef(null);
             setSecondaryVideo(undefined);
           }
-          if (secondaryProducerRef) {
-            secondaryProducerRef.close();
-            setSecondaryProducerRef(null);
-            ws.emit("closeProducer", { producerId: secondaryProducerRef.id });
-          }
+
+          toast.error("Failed to start webcam: " + error.message);
         }
       },
 
@@ -1616,7 +1878,12 @@ export const createStreamStore = (
           console.log(`Closing failed ${transportType} transport.`);
           if (transportType === "send") {
             get().sendTransportRef?.close();
-            set({ sendTransportRef: null, videoProducerRef: null });
+            set({
+              sendTransportRef: null,
+              videoProducerRef: null,
+              secondaryProducerRef: null,
+              audioProducerRef: null,
+            });
             if (lastRoomName) {
               await createSendTransport(lastRoomName);
               await get().handleCameraChange();
@@ -1624,8 +1891,8 @@ export const createStreamStore = (
                 await get().handleSecondaryCamera(
                   get().selectedSecondaryDevice
                 );
-              if (get().selectedAudioDevice)
-                await get().handleAudioDeviceChange();
+              if (get().selectedAudioDevice && !get().isMicMuted)
+                await get().handleAudioToggle();
             }
           } else {
             // receive
@@ -1853,21 +2120,52 @@ export const createStreamStore = (
       setAudioDevices: (devices) => set({ audioDevices: devices }),
       setSelectedAudioDevice: (deviceId) =>
         set({ selectedAudioDevice: deviceId }),
+      setOldAudioDevice: (deviceId) => set({ oldAudioDevice: deviceId }),
+      setStudentMuteStatus: (userId: string, isMuted: boolean) => {
+        const { mutedStudents } = get();
+        const newMap = new Map(mutedStudents);
+        newMap.set(userId, isMuted);
+        set({ mutedStudents: newMap });
 
+        console.log(`Student ${userId} mute status: ${isMuted}`);
+      },
       startAudioProduction: async () => {
         const {
           selectedAudioDevice,
+          oldAudioDevice,
           sendTransportRef,
           setAudioProducerRef,
           setLocalAudio,
           setIsMicMuted,
           audioProducerRef,
           setIsLoadingMic,
+          waitForTransportConnection,
+          setOldAudioDevice,
+          localAudio,
+          socket,
+          lastUserData,
+          startLocalAudioDetection,
+          stopLocalAudioDetection,
         } = get();
+        const { userData } = userStoreApi.getState();
 
         // Prevent double creation
-        if (audioProducerRef && !(audioProducerRef as any)._closed) {
+        if (
+          audioProducerRef &&
+          !(audioProducerRef as any)._closed &&
+          selectedAudioDevice === oldAudioDevice
+        ) {
+          localAudio?.getAudioTracks().forEach((t) => (t.enabled = true));
+          set({ isMicMuted: false }); // Update UI immediately
+          // Phase 2: Server (background)
+          socket!.emit("resumeProducer", { producerId: audioProducerRef.id });
           console.log("Audio producer already exists");
+          if (socket && userData) {
+            socket.emit("muteStatusChanged", {
+              userId: userData.id,
+              isMuted: false,
+            });
+          }
           return;
         }
 
@@ -1875,10 +2173,20 @@ export const createStreamStore = (
           toast.error("Not connected to room");
           return;
         }
+
+        try {
+          await waitForTransportConnection(sendTransportRef);
+        } catch (transportError: any) {
+          console.error("Send transport not ready for audio:", transportError);
+          toast.error("Connection error. Cannot start mic.");
+          setIsLoadingMic(false);
+          return;
+        }
         setIsLoadingMic(true);
         try {
           // Get audio stream
           const stream = await navigator.mediaDevices.getUserMedia({
+            video: false,
             audio: {
               deviceId: selectedAudioDevice
                 ? { exact: selectedAudioDevice }
@@ -1910,11 +2218,24 @@ export const createStreamStore = (
           setAudioProducerRef(producer);
           setLocalAudio(stream);
           setIsMicMuted(false);
+          setOldAudioDevice(selectedAudioDevice);
+
+          if (socket && userData) {
+            socket.emit("muteStatusChanged", {
+              userId: userData.id,
+              isMuted: false,
+            });
+          }
+
+          startLocalAudioDetection(stream);
 
           // Set up event listeners
           producer.on("transportclose", () => {
             console.log("Audio producer transport closed");
             const { audioProducerRef, localAudio } = get();
+
+            stopLocalAudioDetection();
+
             if (audioProducerRef) {
               setAudioProducerRef(null);
             }
@@ -1930,7 +2251,7 @@ export const createStreamStore = (
             get().stopAudioProduction();
           });
           setIsLoadingMic(false);
-          toast.success("Microphone enabled");
+          // toast.success("Microphone enabled");
         } catch (error: any) {
           setIsLoadingMic(false);
           console.error("Error starting audio:", error);
@@ -1955,43 +2276,37 @@ export const createStreamStore = (
         const {
           audioProducerRef,
           localAudio,
-          setAudioProducerRef,
-          setLocalAudio,
-          setIsMicMuted,
           socket,
+          lastUserData,
+          stopLocalAudioDetection,
         } = get();
-
+        const { userData } = userStoreApi.getState();
         console.log("Stopping audio production");
-
+        stopLocalAudioDetection();
         if (audioProducerRef && !(audioProducerRef as any)._closed) {
           try {
             // Notify server FIRST
             if (socket) {
-              socket.emit("closeProducer", { producerId: audioProducerRef.id });
+              socket.emit("pauseProducer", { producerId: audioProducerRef.id });
             }
+            localAudio?.getAudioTracks().forEach((t) => (t.enabled = false));
+            set({ isMicMuted: true });
 
-            // Then close locally
-            audioProducerRef.close();
+            if (socket && userData) {
+              socket.emit("muteStatusChanged", {
+                userId: userData.id,
+                isMuted: true,
+              });
+            }
           } catch (error) {
-            console.error("Error closing audio producer:", error);
+            console.error("Error pausing audio producer:", error);
           }
         }
 
-        if (localAudio) {
-          localAudio.getTracks().forEach((track) => {
-            track.stop();
-            console.log("Stopped audio track:", track.id);
-          });
-        }
-
-        setAudioProducerRef(null);
-        setLocalAudio(undefined);
-        setIsMicMuted(true);
-
-        toast.success("Microphone disabled");
+        // toast.success("Microphone disabled");
       },
 
-      handleAudioToggle: async () => {
+      handleAudioToggle: async (userId: string) => {
         const { isMicMuted, audioProducerRef } = get();
 
         console.log("Audio toggle - Current state:", {
@@ -2014,23 +2329,40 @@ export const createStreamStore = (
       },
 
       handleAudioDeviceChange: async () => {
-        const { selectedAudioDevice, audioProducerRef, isMicMuted } = get();
+        const {
+          selectedAudioDevice,
+          audioProducerRef,
+          isMicMuted,
+          stopAudioProduction,
+          startAudioProduction,
+          socket,
+        } = get();
 
         if (!selectedAudioDevice) return;
 
         console.log("Changing audio device to:", selectedAudioDevice);
 
-        // If microphone is currently active, restart with new device
         if (!isMicMuted && audioProducerRef) {
-          get().stopAudioProduction();
-          // Wait a bit for cleanup
+          await stopAudioProduction();
+          set({ selectedAudioDevice: selectedAudioDevice });
+          try {
+            // Notify server FIRST
+            if (socket) {
+              socket.emit("closeProducer", { producerId: audioProducerRef.id });
+            }
+
+            // Then close locally
+            audioProducerRef.close();
+          } catch (error) {
+            console.error("Error closing audio producer:", error);
+          }
           await new Promise((resolve) => setTimeout(resolve, 100));
-          await get().startAudioProduction();
+          await startAudioProduction();
         }
       },
 
       addRemoteAudioStream: (consumerId: string, stream: MediaStream) => {
-        const { remoteAudioStreams } = get();
+        const { remoteAudioStreams, startRemoteAudioDetection } = get();
 
         console.log("Adding remote audio stream:", {
           consumerId,
@@ -2040,10 +2372,11 @@ export const createStreamStore = (
 
         remoteAudioStreams.set(consumerId, stream);
         set({ remoteAudioStreams: new Map(remoteAudioStreams) });
+        startRemoteAudioDetection(consumerId, stream);
       },
 
       removeRemoteAudioStream: (consumerId: string) => {
-        const { remoteAudioStreams } = get();
+        const { remoteAudioStreams, stopRemoteAudioDetection } = get();
 
         console.log("Removing remote audio stream:", consumerId);
 
@@ -2054,7 +2387,7 @@ export const createStreamStore = (
             console.log("Stopped remote audio track:", track.id);
           });
         }
-
+        stopRemoteAudioDetection(consumerId);
         remoteAudioStreams.delete(consumerId);
         set({ remoteAudioStreams: new Map(remoteAudioStreams) });
       },
@@ -2111,6 +2444,223 @@ export const createStreamStore = (
 
           transport.on("connectionstatechange", onStateChange);
         });
+      },
+      setSpeakingConsumer: (consumerId: string, isSpeaking: boolean) => {
+        const { speakingConsumers } = get();
+        const newSet = new Set(speakingConsumers);
+
+        if (isSpeaking) {
+          newSet.add(consumerId);
+        } else {
+          newSet.delete(consumerId);
+        }
+
+        set({ speakingConsumers: newSet });
+      },
+
+      setLocalSpeaking: (isSpeaking: boolean) => {
+        set({ isLocalSpeaking: isSpeaking });
+      },
+
+      // 2. Audio level detection function
+      detectAudioLevel: (
+        analyzer: AnalyserNode,
+        identifier: string,
+        isLocal: boolean = false
+      ) => {
+        const dataArray = new Uint8Array(analyzer.frequencyBinCount);
+        let isSpeaking = false;
+        let silenceTimeout: NodeJS.Timeout | null = null;
+
+        // Thresholds
+        const SPEAKING_THRESHOLD = 15; // Volume threshold (0-255)
+        const SILENCE_DELAY = 300; // Ms of silence before marking as not speaking
+
+        const checkAudioLevel = () => {
+          analyzer.getByteFrequencyData(dataArray);
+
+          // Calculate average volume
+          const average =
+            dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
+
+          if (average > SPEAKING_THRESHOLD) {
+            // Clear any pending silence timeout
+            if (silenceTimeout) {
+              clearTimeout(silenceTimeout);
+              silenceTimeout = null;
+            }
+
+            // Mark as speaking if not already
+            if (!isSpeaking) {
+              isSpeaking = true;
+
+              if (isLocal) {
+                get().setLocalSpeaking(true);
+                // Emit to server
+                const { socket } = get();
+                console.log(identifier, "iden");
+                socket?.emit("speaking", {
+                  isSpeaking: true,
+                  consumerId: identifier,
+                });
+              } else {
+                get().setSpeakingConsumer(identifier, true);
+              }
+            }
+          } else if (isSpeaking && !silenceTimeout) {
+            // Start silence timeout
+            silenceTimeout = setTimeout(() => {
+              isSpeaking = false;
+
+              if (isLocal) {
+                get().setLocalSpeaking(false);
+                // Emit to server
+                const { socket } = get();
+                socket?.emit("speaking", { isSpeaking: false });
+              } else {
+                get().setSpeakingConsumer(identifier, false);
+              }
+
+              silenceTimeout = null;
+            }, SILENCE_DELAY);
+          }
+        };
+
+        // Check every 100ms
+        const intervalId = setInterval(checkAudioLevel, 100);
+
+        // Return cleanup function
+        return () => {
+          clearInterval(intervalId);
+          if (silenceTimeout) clearTimeout(silenceTimeout);
+        };
+      },
+
+      // 3. Start local audio detection
+      startLocalAudioDetection: (stream: MediaStream) => {
+        try {
+          const { localAudioAnalyzer, stopLocalAudioDetection } = get();
+
+          // Clean up existing analyzer
+          if (localAudioAnalyzer) {
+            stopLocalAudioDetection();
+          }
+
+          // Create audio context and analyzer
+          const audioContext = new AudioContext();
+          const source = audioContext.createMediaStreamSource(stream);
+          const analyzer = audioContext.createAnalyser();
+
+          analyzer.fftSize = 512;
+          analyzer.smoothingTimeConstant = 0.8;
+
+          source.connect(analyzer);
+
+          // Store analyzer
+          set({ localAudioAnalyzer: analyzer });
+
+          // Start detection (using "local" as identifier)
+          const cleanup = get().detectAudioLevel(analyzer, "local", true);
+
+          // Store cleanup function for later
+          (analyzer as any)._cleanup = cleanup;
+
+          console.log("✅ Local audio detection started");
+        } catch (error) {
+          console.error("Error starting local audio detection:", error);
+        }
+      },
+
+      // 4. Stop local audio detection
+      stopLocalAudioDetection: () => {
+        const { localAudioAnalyzer } = get();
+
+        if (localAudioAnalyzer) {
+          // Call cleanup function
+          if ((localAudioAnalyzer as any)._cleanup) {
+            (localAudioAnalyzer as any)._cleanup();
+          }
+
+          // Close audio context
+          const audioContext = (localAudioAnalyzer as any).context;
+          if (audioContext && audioContext.state !== "closed") {
+            audioContext.close();
+          }
+
+          set({ localAudioAnalyzer: null, isLocalSpeaking: false });
+          console.log("Local audio detection stopped");
+        }
+      },
+
+      // 5. Start remote audio detection (using consumerId)
+      startRemoteAudioDetection: (consumerId: string, stream: MediaStream) => {
+        try {
+          const { audioAnalyzers } = get();
+
+          // Clean up existing analyzer for this consumer
+          get().stopRemoteAudioDetection(consumerId);
+
+          // Create audio context and analyzer
+          const audioContext = new AudioContext();
+          const source = audioContext.createMediaStreamSource(stream);
+          const analyzer = audioContext.createAnalyser();
+
+          analyzer.fftSize = 512;
+          analyzer.smoothingTimeConstant = 0.8;
+
+          source.connect(analyzer);
+
+          // Store analyzer
+          const newAnalyzers = new Map(audioAnalyzers);
+          newAnalyzers.set(consumerId, analyzer);
+          set({ audioAnalyzers: newAnalyzers });
+
+          // Start detection (using consumerId as identifier)
+          const cleanup = get().detectAudioLevel(analyzer, consumerId, false);
+
+          // Store cleanup function
+          (analyzer as any)._cleanup = cleanup;
+
+          console.log(
+            `✅ Remote audio detection started for consumer ${consumerId}`
+          );
+        } catch (error) {
+          console.error(
+            `Error starting remote audio detection for ${consumerId}:`,
+            error
+          );
+        }
+      },
+
+      // 6. Stop remote audio detection
+      stopRemoteAudioDetection: (consumerId: string) => {
+        const { audioAnalyzers } = get();
+        const analyzer = audioAnalyzers.get(consumerId);
+
+        if (analyzer) {
+          // Call cleanup function
+          if ((analyzer as any)._cleanup) {
+            (analyzer as any)._cleanup();
+          }
+
+          // Close audio context
+          const audioContext = (analyzer as any).context;
+          if (audioContext && audioContext.state !== "closed") {
+            audioContext.close();
+          }
+
+          // Remove from map
+          const newAnalyzers = new Map(audioAnalyzers);
+          newAnalyzers.delete(consumerId);
+          set({ audioAnalyzers: newAnalyzers });
+
+          // Remove from speaking set
+          get().setSpeakingConsumer(consumerId, false);
+
+          console.log(
+            `Remote audio detection stopped for consumer ${consumerId}`
+          );
+        }
       },
     };
   });

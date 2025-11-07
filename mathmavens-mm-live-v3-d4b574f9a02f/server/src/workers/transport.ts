@@ -13,7 +13,7 @@ export const createTransportWorker = ({io}:Dependencies) => {
   return new Worker(
     QUEUE_CONFIG.transport.name,
     async (job) => {
-      const { socketId, isSender, routerId } = job.data as TransportJobData;
+      const { socketId, isSender, routerId,isSecondary } = job.data as TransportJobData;
       const startTime = Date.now();
 
       try {
@@ -22,6 +22,7 @@ export const createTransportWorker = ({io}:Dependencies) => {
           socketId,
           isSender,
           routerId,
+          isSecondary
         });
 
         const socket = io.sockets.sockets.get(socketId);

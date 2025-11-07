@@ -10,12 +10,14 @@ import {
   ArrowLeft,
   ArrowRight,
   Minimize,
+  Mic,
+  MicOff,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { useStreamStore } from "@/providers/stream-store-provider";
 import { useShallow } from "zustand/shallow";
 import { USER_DATA_TYPE } from "@/types/user";
-import React from "react"; 
+import React from "react";
 
 type VideoStreamType = {
   consumerId: string;
@@ -29,8 +31,7 @@ type VideoStreamType = {
   allStreamIds?: string[];
   currentFullscreenId?: string;
   setFullscreenId?: (id: string | null) => void;
-    cameraType?: 'primary' | 'secondary';
-
+  cameraType?: "primary" | "secondary";
 };
 
 const VideoStream = ({
@@ -44,13 +45,22 @@ const VideoStream = ({
   isActuallyFullscreen = false,
   allStreamIds = [],
   currentFullscreenId = "",
-  cameraType = 'primary',
+  cameraType = "primary",
   setFullscreenId = () => {},
 }: VideoStreamType) => {
-  const { handleRefreshStudent, handleKickStudent } = useStreamStore(
+  const {
+    handleRefreshStudent,
+    handleKickStudent,
+    speakingConsumers,
+    remoteAudioStreams,
+    mutedStudents,
+  } = useStreamStore(
     useShallow((state) => ({
       handleRefreshStudent: state.handleRefreshStudent,
       handleKickStudent: state.handleKickStudent,
+      speakingConsumers: state.speakingConsumers,
+      remoteAudioStreams: state.remoteAudioStreams,
+      mutedStudents: state.mutedStudents,
     }))
   );
 
@@ -161,8 +171,6 @@ const VideoStream = ({
     };
   }, []);
 
-
-
   const handleToggleFullscreen = () => {
     if (isActuallyFullscreen) {
       setFullscreenId(null); // Tell parent to exit fullscreen
@@ -228,7 +236,7 @@ const VideoStream = ({
   };
 
   const getVideoSizingClasses = () => {
-    if (isActuallyFullscreen) return "w-full h-full object-contain"; 
+    if (isActuallyFullscreen) return "w-full h-full object-contain";
     return "w-auto h-full aspect-[15/9] object-contain";
   };
 
@@ -263,9 +271,23 @@ const VideoStream = ({
     const currentIndex = allStreamIds.indexOf(currentFullscreenId);
     if (currentIndex === -1) return;
 
-    const prevIndex = (currentIndex - 1 + allStreamIds.length) % allStreamIds.length;
+    const prevIndex =
+      (currentIndex - 1 + allStreamIds.length) % allStreamIds.length;
     setFullscreenId(allStreamIds[prevIndex]);
   };
+  console.log(mutedStudents, "mutedstudent");
+  const isMuted = mutedStudents?.get(userData.id) ?? true;
+
+  // const isSpeaking = speakingConsumers.has(consumerId);
+  // speakingConsumers.forEach((a) => console.log(a, "INI IS SPIKING"));
+  // // Check if this student has audio (mic enabled)
+  // // We need to find the audio consumer for this student
+  // const hasAudioEnabled = Array.from(remoteAudioStreams.keys()).some(
+  //   (audioConsumerId) => {
+  //     // Audio consumers belong to same user, we can check by comparing userData
+  //     return audioConsumerId.includes(userData.id);
+  //   }
+  // );
 
   return (
     <div
@@ -281,6 +303,12 @@ const VideoStream = ({
         onDoubleClick={handleToggleFullscreen} // Use new handler
         style={getDynamicVideoStyles()}
       />
+      {/* {isSpeaking && (
+        <div className="absolute top-2 left-2 z-20 bg-green-500 px-2 py-1 rounded-md flex items-center gap-1 animate-pulse">
+          <Mic className="w-4 h-4 text-white" />
+          <span className="text-white text-xs font-semibold">Speaking</span>
+        </div>
+      )} */}
 
       {isActuallyFullscreen && allStreamIds.length > 1 && (
         <>
@@ -303,7 +331,7 @@ const VideoStream = ({
         </>
       )}
 
-      {(isAdmin && showStats) && (
+      {isAdmin && showStats && (
         <div className="absolute top-1 left-1 pointer-events-none">
           <p className="font-semibold text-sm text-white bg-black bg-opacity-50 px-2 py-1 rounded">
             {userData.peerId}
@@ -319,8 +347,17 @@ const VideoStream = ({
 
       <div className="absolute bottom-1 left-1 pointer-events-none">
         <p className="font-semibold text-sm text-white bg-black bg-opacity-50 px-2 py-1 rounded">
-          {userData?.child_name}
-          {cameraType === 'secondary' && (
+          <div className="flex gap-1 items-center">
+            {userData?.child_name}
+
+            {isMuted ? (
+              <MicOff className="w-4 h-4 text-red-400" />
+            ) : (
+              <Mic className="w-4 h-4 text-green-400" />
+            )}
+          </div>
+
+          {cameraType === "secondary" && (
             <span className="ml-2 text-xs bg-blue-500 text-white px-2 py-0.5 rounded">
               Cam 2
             </span>

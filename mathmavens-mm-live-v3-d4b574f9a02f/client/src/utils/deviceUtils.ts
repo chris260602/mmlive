@@ -26,7 +26,6 @@ export const getUserVideoDevices = async()=>{
 
 export const getUserAudioDevices = async (): Promise<MediaDeviceInfo[]> => {
   const devices = await navigator.mediaDevices.enumerateDevices();
-  console.log(devices,'dev')
   return devices.filter(device => device.kind === 'audioinput');
 };
 
@@ -66,6 +65,20 @@ export const requestCameraPermission = async () => {
     } catch (err) {
         console.error("Error requesting camera permission:", err);
         toast.error("Please give camera permission")
+        return false; // Indicates permission was denied or another error occurred
+    }
+};
+
+export const requestMediaPermission = async () => {
+    try {
+        // Request a stream just to trigger the permission prompt.
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Immediately stop the tracks to release the camera, as we don't need this stream yet.
+        stream.getTracks().forEach(track => track.stop());
+        return true; // Indicates permission was granted
+    } catch (err) {
+        console.error("Error requesting media permission:", err);
+        toast.error("Please give media permission")
         return false; // Indicates permission was denied or another error occurred
     }
 };

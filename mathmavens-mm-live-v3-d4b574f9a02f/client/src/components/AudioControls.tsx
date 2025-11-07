@@ -22,6 +22,7 @@ export const AudioControls = () => {
     setSelectedAudioDevice,
     isRoomJoined,
     isLoadingMic,
+    handleAudioDeviceChange
   } = useStreamStore(
     useShallow((state) => ({
       isMicMuted: state.isMicMuted,
@@ -30,7 +31,8 @@ export const AudioControls = () => {
       handleAudioToggle: state.handleAudioToggle,
       setSelectedAudioDevice: state.setSelectedAudioDevice,
       isRoomJoined: state.isRoomJoined,
-      isLoadingMic:state.isLoadingMic
+      isLoadingMic:state.isLoadingMic,
+      handleAudioDeviceChange:state.handleAudioDeviceChange
     }))
   );
 
@@ -38,7 +40,11 @@ export const AudioControls = () => {
     <div className="flex gap-2 items-center">
       <Select
         value={selectedAudioDevice}
-        onValueChange={setSelectedAudioDevice}
+        onValueChange={(val)=>{
+          setSelectedAudioDevice(val)
+          handleAudioDeviceChange();
+        }
+      }
         disabled={!isRoomJoined}
       >
         <SelectTrigger className="w-[200px]">
