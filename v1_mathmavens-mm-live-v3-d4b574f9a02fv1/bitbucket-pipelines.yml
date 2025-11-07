@@ -1,0 +1,41 @@
+
+image: node:18
+
+pipelines:
+  custom:
+    deploy-production: # This pipeline runs on pushes to the 'production' branch
+      - step:
+          name: Deploy to Production
+          script:
+            - ssh $PRODUCTION_SSH_USER@$PRODUCTION_SSH_HOST "
+                cd $PRODUCTION_DEPLOY_DIR || exit 1;
+
+                echo "Pulling latest code from Bitbucket..."
+                sudo git pull origin production;
+
+                echo 'Building client application...';
+                (cd client && sudo npm install && sudo npm run build && sudo pm2 restart ecosystem.config.js);
+
+                echo 'Installing server dependencies and restarting...';
+                (cd server && sudo npm install && sudo npm run build && sudo pm2 restart ecosystem.config.js);
+
+                echo 'Development deployment successful! 🚀'"
+
+    deploy-development: # This pipeline runs on pushes to the 'development' branch
+      - step:
+          name: Deploy to Development
+          script:
+            - ssh $DEVELOPMENT_SSH_USER@$DEVELOPMENT_SSH_HOST "
+                cd $DEVELOPMENT_DEPLOY_DIR || exit 1;
+
+                echo 'Pulling latest code from Bitbucket...';
+                sudo git pull origin development;
+                
+                echo 'Building client application...';
+                (cd client && sudo npm install && sudo npm run build && sudo pm2 restart ecosystem.config.js);
+
+                echo 'Installing server dependencies and restarting...';
+                (cd server && sudo npm install && sudo npm run build && sudo pm2 restart ecosystem.config.js);
+
+                echo 'Development deployment successful! 🚀';
+              "
